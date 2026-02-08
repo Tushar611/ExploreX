@@ -814,8 +814,8 @@ export default function ActivityChatScreen() {
     [user?.id, theme, moderators, activeMessages, handleLongPress, handleReaction, playAudio, playingAudioId]
   );
 
-  const EmptyChat = () => (
-    <Animated.View entering={FadeIn} style={styles.emptyContainer}>
+  const EmptyChat = useCallback(() => (
+    <View style={styles.emptyContainer}>
       <View style={styles.emptyContent}>
         <View style={[styles.emptyIconCircle, { backgroundColor: theme.primary + "20" }]}>
           <Icon name="message-circle" size={32} color={theme.primary} />
@@ -827,8 +827,8 @@ export default function ActivityChatScreen() {
           Say hello to the group!
         </ThemedText>
       </View>
-    </Animated.View>
-  );
+    </View>
+  ), [theme]);
 
   const attendeeCount = activity?.attendees.length || 0;
   const allMembers = activity ? [activity.host, ...activity.attendees] : [];

@@ -283,7 +283,7 @@ function BookingModal({
     <Modal visible={visible} animationType="slide" transparent>
       <View style={styles.modalOverlay}>
         <Animated.View
-          entering={SlideInDown.springify().damping(20)}
+          entering={SlideInDown.springify().damping(28).stiffness(120)}
           style={[styles.modalContent, { backgroundColor: theme.backgroundRoot, paddingBottom: insets.bottom + Spacing.lg }]}
         >
           <View style={styles.modalHandle} />

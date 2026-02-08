@@ -570,7 +570,7 @@ export default function ActivitiesScreen() {
         }
         ListEmptyComponent={
           <EmptyState
-            image={require("../../assets/images/empty-activities.png")}
+            icon="compass"
             title="No Activities Yet"
             description="Be the first to organize a meetup! Create a hiking trip, climbing session, or campfire hangout."
             actionLabel={isAuthenticated ? "Create Activity" : undefined}
