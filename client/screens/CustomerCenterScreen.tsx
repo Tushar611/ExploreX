@@ -42,7 +42,7 @@ export default function CustomerCenterScreen() {
       : tier === "pro"
         ? "Explorer ($6.99/mo)"
         : tier === "expert"
-          ? "Legend ($14.99/mo)"
+          ? "Adventurer ($15.99/mo)"
           : "Lifetime";
 
   const tierGradient: [string, string] =

@@ -56,7 +56,7 @@ const TIERS: TierConfig[] = [
   },
   {
     id: 'expert',
-    name: 'Legend',
+    name: 'Adventurer',
     iconName: 'diamond-outline',
     gradient: ['#A78BFA', '#8B5CF6', '#7C3AED'],
     glowColor: '#8B5CF6',

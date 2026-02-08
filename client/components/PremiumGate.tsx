@@ -64,7 +64,7 @@ function PremiumGateOverlay({
   const navigation = useNavigation<any>();
   const { presentPaywall, isConfigured } = useSubscription();
 
-  const tierLabel = requiredTier === "pro" ? "Pro" : "Premium";
+  const tierLabel = requiredTier === "pro" ? "Explorer" : "Adventurer";
   const gradient: [string, string, string] =
     requiredTier === "pro"
       ? ["#FF8C42", "#F97316", "#EA580C"]
@@ -158,7 +158,7 @@ export function PremiumBadge({ requiredTier = "pro", small = false }: PremiumBad
         style={{ marginRight: small ? 2 : 4 }}
       />
       <ThemedText style={[styles.badgeText, small && styles.badgeTextSmall]}>
-        {requiredTier === "pro" ? "PRO" : "PREMIUM"}
+        {requiredTier === "pro" ? "EXPLORER" : "ADVENTURER"}
       </ThemedText>
     </LinearGradient>
   );

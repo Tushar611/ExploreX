@@ -60,7 +60,7 @@ const TIER_FEATURES: Record<SubscriptionTier, string[]> = {
     "Unlimited AI Advisor access",
     "Basic Expert Marketplace access",
     "Priority visibility in Discover",
-    "Explorer Badge",
+    "Pro Badge",
   ],
   expert: [
     "Unlimited Radar",
@@ -68,7 +68,7 @@ const TIER_FEATURES: Record<SubscriptionTier, string[]> = {
     "Full AI Van Build Advisor",
     "Full Expert Marketplace access",
     "Activities posting + hosting",
-    "Legend Badge",
+    "Premium Badge",
     "Advanced match recommendations",
     "Highest profile visibility",
   ],
@@ -97,8 +97,8 @@ export const TIER_LIMITS: Record<
 const TIER_PRICES: Record<SubscriptionTier, string> = {
   free: "$0/month",
   pro: "$6.99/month",
-  expert: "$14.99/month",
-  lifetime: "$79.99",
+  expert: "$15.99/month",
+  lifetime: "$99.99",
 };
 
 function getTierFromEntitlements(activeEntitlements: string[]): SubscriptionTier {
@@ -201,10 +201,10 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
       if (packageId.includes("lifetime")) {
         setTier("lifetime");
         setUserEntitlements(["lifetime"]);
-      } else if (packageId.includes("expert")) {
+      } else if (packageId.includes("expert") || packageId.includes("annual") || packageId === "expert") {
         setTier("expert");
         setUserEntitlements(["expert"]);
-      } else if (packageId.includes("pro") || packageId.includes("monthly") || packageId.includes("yearly")) {
+      } else if (packageId.includes("pro") || packageId.includes("monthly") || packageId.includes("yearly") || packageId === "pro") {
         setTier("pro");
         setUserEntitlements(["pro"]);
       }

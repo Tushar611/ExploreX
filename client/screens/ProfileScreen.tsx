@@ -480,7 +480,7 @@ export default function ProfileScreen() {
                   <ThemedText style={styles.upgradeTitle}>
                     {currentTier === "lifetime" ? "Lifetime Member"
                       : currentTier === "free" ? "Upgrade"
-                        : currentTier === "pro" ? "Go Legend"
+                        : currentTier === "pro" ? "Go Adventurer"
                           : "Go Lifetime"}
                   </ThemedText>
                   <ThemedText style={styles.upgradeSubtitle}>
