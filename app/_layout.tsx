@@ -13,6 +13,7 @@ import { AuthProvider } from "@/context/AuthContext";
 import { DataProvider } from "@/context/DataContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { SubscriptionProvider } from "@/context/SubscriptionContext";
+import { AlertProvider } from "@/context/AlertContext";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -58,14 +59,16 @@ export default function RootLayout() {
           <AuthProvider>
             <SubscriptionProvider>
               <DataProvider>
-                <SafeAreaProvider>
-                  <GestureHandlerRootView style={styles.root}>
-                    <KeyboardProvider>
-                      <Slot />
-                      <StatusBar style="auto" />
-                    </KeyboardProvider>
-                  </GestureHandlerRootView>
-                </SafeAreaProvider>
+                <AlertProvider>
+                  <SafeAreaProvider>
+                    <GestureHandlerRootView style={styles.root}>
+                      <KeyboardProvider>
+                        <Slot />
+                        <StatusBar style="auto" />
+                      </KeyboardProvider>
+                    </GestureHandlerRootView>
+                  </SafeAreaProvider>
+                </AlertProvider>
               </DataProvider>
             </SubscriptionProvider>
           </AuthProvider>
