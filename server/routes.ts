@@ -50,7 +50,7 @@ async function checkSupabaseTables() {
     'ai_chat_sessions', 'activities', 'activity_chat_messages',
     'user_profiles', 'user_locations', 'compatibility_history',
     'swipes', 'matches', 'travel_verification',
-    'expert_applications', 'consultation_bookings'
+    'expert_applications', 'consultation_bookings', 'radar_chat_requests'
   ];
   for (const table of tables) {
     const col = table === 'user_locations' ? 'user_id' : 'id';
@@ -60,6 +60,32 @@ async function checkSupabaseTables() {
     } else {
       console.log(`[DB] Table '${table}': OK`);
     }
+  }
+}
+
+// In-memory chat request storage (fallback when Supabase table not available)
+interface ChatRequest {
+  id: string;
+  sender_id: string;
+  receiver_id: string;
+  status: string;
+  sender_name: string | null;
+  sender_photo: string | null;
+  receiver_name: string | null;
+  receiver_photo: string | null;
+  message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+const chatRequestStore: ChatRequest[] = [];
+let radarTableAvailable = false;
+
+async function checkRadarTable() {
+  if (!supabaseAdmin) return;
+  const { error } = await supabaseAdmin.from('radar_chat_requests').select('id').limit(1);
+  radarTableAvailable = !error;
+  if (!radarTableAvailable) {
+    console.log("[DB] radar_chat_requests not in Supabase - using in-memory fallback. Run the SQL from scripts/create-supabase-tables.sql in your Supabase SQL Editor to create it.");
   }
 }
 
@@ -222,6 +248,7 @@ Be realistic with current market prices. Consider DIY vs professional installati
 export async function registerRoutes(app: Express): Promise<Server> {
 
   checkSupabaseTables().catch(err => console.error("[DB] Table check failed:", err));
+  checkRadarTable().catch(err => console.error("[DB] Radar table check failed:", err));
 
   // Health check
   app.get("/api/health", (_req: Request, res: Response) => {
@@ -1889,40 +1916,62 @@ Return ONLY this JSON structure:
         return res.status(400).json({ error: "senderId and receiverId are required" });
       }
 
-      const sb = getSupabase();
+      const id = `cr_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+      const nowStr = new Date().toISOString();
 
-      const { data: existing } = await sb
-        .from('radar_chat_requests')
-        .select('id, status')
-        .or(`and(sender_id.eq.${senderId},receiver_id.eq.${receiverId}),and(sender_id.eq.${receiverId},receiver_id.eq.${senderId})`)
-        .in('status', ['pending', 'accepted']);
+      if (radarTableAvailable) {
+        const sb = getSupabase();
+        const { data: existing } = await sb
+          .from('radar_chat_requests')
+          .select('id, status')
+          .or(`and(sender_id.eq.${senderId},receiver_id.eq.${receiverId}),and(sender_id.eq.${receiverId},receiver_id.eq.${senderId})`)
+          .in('status', ['pending', 'accepted']);
 
-      if (existing && existing.length > 0) {
-        const req = existing[0];
-        if (req.status === 'accepted') {
-          return res.json({ alreadyConnected: true, requestId: req.id });
+        if (existing && existing.length > 0) {
+          const match = existing[0];
+          if (match.status === 'accepted') {
+            return res.json({ alreadyConnected: true, requestId: match.id });
+          }
+          return res.json({ alreadyRequested: true, requestId: match.id });
         }
-        return res.json({ alreadyRequested: true, requestId: req.id });
+
+        const { error } = await sb
+          .from('radar_chat_requests')
+          .insert({
+            id,
+            sender_id: senderId,
+            receiver_id: receiverId,
+            sender_name: senderName || '',
+            sender_photo: senderPhoto || '',
+            receiver_name: receiverName || '',
+            receiver_photo: receiverPhoto || '',
+            message: message || '',
+            status: 'pending',
+            created_at: nowStr,
+            updated_at: nowStr,
+          });
+        if (error) throw error;
+      } else {
+        const existing = chatRequestStore.find(r =>
+          ((r.sender_id === senderId && r.receiver_id === receiverId) ||
+           (r.sender_id === receiverId && r.receiver_id === senderId)) &&
+          ['pending', 'accepted'].includes(r.status)
+        );
+        if (existing) {
+          if (existing.status === 'accepted') {
+            return res.json({ alreadyConnected: true, requestId: existing.id });
+          }
+          return res.json({ alreadyRequested: true, requestId: existing.id });
+        }
+        chatRequestStore.push({
+          id, sender_id: senderId, receiver_id: receiverId,
+          status: 'pending', sender_name: senderName || null,
+          sender_photo: senderPhoto || null, receiver_name: receiverName || null,
+          receiver_photo: receiverPhoto || null, message: message || null,
+          created_at: nowStr, updated_at: nowStr,
+        });
       }
 
-      const id = `cr_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-      const { error } = await sb
-        .from('radar_chat_requests')
-        .insert({
-          id,
-          sender_id: senderId,
-          receiver_id: receiverId,
-          sender_name: senderName || '',
-          sender_photo: senderPhoto || '',
-          receiver_name: receiverName || '',
-          receiver_photo: receiverPhoto || '',
-          message: message || '',
-          status: 'pending',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        });
-
-      if (error) throw error;
       res.json({ success: true, requestId: id });
     } catch (error) {
       console.error("Send chat request error:", error);
@@ -1932,27 +1981,30 @@ Return ONLY this JSON structure:
 
   app.get("/api/radar/chat-requests/:userId", async (req: Request, res: Response) => {
     try {
-      const sb = getSupabase();
       const userId = req.params.userId;
 
-      const { data: received } = await sb
-        .from('radar_chat_requests')
-        .select('*')
-        .eq('receiver_id', userId)
-        .eq('status', 'pending')
-        .order('created_at', { ascending: false });
+      if (radarTableAvailable) {
+        const sb = getSupabase();
+        const { data: received } = await sb
+          .from('radar_chat_requests')
+          .select('*')
+          .eq('receiver_id', userId)
+          .eq('status', 'pending')
+          .order('created_at', { ascending: false });
 
-      const { data: sent } = await sb
-        .from('radar_chat_requests')
-        .select('*')
-        .eq('sender_id', userId)
-        .order('created_at', { ascending: false })
-        .limit(20);
+        const { data: sent } = await sb
+          .from('radar_chat_requests')
+          .select('*')
+          .eq('sender_id', userId)
+          .order('created_at', { ascending: false })
+          .limit(20);
 
-      res.json({
-        received: received || [],
-        sent: sent || [],
-      });
+        return res.json({ received: received || [], sent: sent || [] });
+      }
+
+      const received = chatRequestStore.filter(r => r.receiver_id === userId && r.status === 'pending');
+      const sent = chatRequestStore.filter(r => r.sender_id === userId).slice(-20);
+      res.json({ received, sent });
     } catch (error) {
       console.error("Get chat requests error:", error);
       res.json({ received: [], sent: [] });
@@ -1966,29 +2018,53 @@ Return ONLY this JSON structure:
         return res.status(400).json({ error: "action must be 'accepted' or 'declined'" });
       }
 
-      const sb = getSupabase();
-      const { error } = await sb
-        .from('radar_chat_requests')
-        .update({ status: action, updated_at: new Date().toISOString() })
-        .eq('id', req.params.requestId);
+      const requestId = req.params.requestId;
 
-      if (error) throw error;
-
-      if (action === 'accepted') {
-        const { data: request } = await sb
+      if (radarTableAvailable) {
+        const sb = getSupabase();
+        const { error } = await sb
           .from('radar_chat_requests')
-          .select('*')
-          .eq('id', req.params.requestId)
-          .single();
+          .update({ status: action, updated_at: new Date().toISOString() })
+          .eq('id', requestId);
+        if (error) throw error;
 
+        if (action === 'accepted') {
+          const { data: request } = await sb
+            .from('radar_chat_requests')
+            .select('*')
+            .eq('id', requestId)
+            .single();
+
+          if (request) {
+            const matchId = `match_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+            await sb.from('matches').insert({
+              id: matchId,
+              user_a_id: request.sender_id,
+              user_b_id: request.receiver_id,
+              created_at: new Date().toISOString(),
+            });
+          }
+        }
+      } else {
+        const request = chatRequestStore.find(r => r.id === requestId);
         if (request) {
-          const matchId = `match_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-          await sb.from('matches').insert({
-            id: matchId,
-            user_a_id: request.sender_id,
-            user_b_id: request.receiver_id,
-            created_at: new Date().toISOString(),
-          });
+          request.status = action;
+          request.updated_at = new Date().toISOString();
+
+          if (action === 'accepted') {
+            try {
+              const sb = getSupabase();
+              const matchId = `match_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+              await sb.from('matches').insert({
+                id: matchId,
+                user_a_id: request.sender_id,
+                user_b_id: request.receiver_id,
+                created_at: new Date().toISOString(),
+              });
+            } catch (e) {
+              console.error("Failed to create match from in-memory request:", e);
+            }
+          }
         }
       }
 

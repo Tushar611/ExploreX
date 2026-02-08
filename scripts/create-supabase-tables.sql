@@ -200,3 +200,18 @@ VALUES
   ('mock_colt', 'Colt', 30, 'Former chef running a mobile food truck. Cooking farm-to-table meals at campsites and trailheads.', '["cooking", "farming", "hiking", "photography"]'::jsonb, '["https://images.unsplash.com/photo-1463453091185-61582044d556?w=400"]'::jsonb, 'Vermont', 'Food Truck', 'slow_travel', false, null),
   ('mock_zara', 'Zara', 27, 'Freelance journalist covering nomad communities and alternative living. My van is my mobile newsroom.', '["writing", "journalism", "podcasting", "social justice"]'::jsonb, '["https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=400"]'::jsonb, 'Oregon', 'Ram ProMaster', 'adventure', true, 'explorer')
 ON CONFLICT (id) DO NOTHING;
+
+-- Radar Chat Requests table for managing connection requests between scanned users
+CREATE TABLE IF NOT EXISTS radar_chat_requests (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  sender_id TEXT NOT NULL,
+  receiver_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  sender_name TEXT,
+  sender_photo TEXT,
+  receiver_name TEXT,
+  receiver_photo TEXT,
+  message TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
