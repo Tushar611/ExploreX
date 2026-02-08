@@ -103,7 +103,7 @@ export default function AIAdvisorScreen() {
       tintDark: "rgba(255,140,66,0.35)",
       screen: "AIChat" as const,
       isPrimary: true,
-      requiredTier: undefined as "pro" | "expert" | undefined,
+      requiredTier: undefined as "explorer" | "adventurer" | undefined,
     },
     {
       icon: "dollar-sign" as const,
@@ -114,7 +114,7 @@ export default function AIAdvisorScreen() {
       tintLight: "#ECFDF5",
       tintDark: "rgba(16,185,129,0.35)",
       screen: "AICostEstimator" as const,
-      requiredTier: undefined as "pro" | "expert" | undefined,
+      requiredTier: undefined as "explorer" | "adventurer" | undefined,
     },
     {
       icon: "users" as const,
@@ -125,14 +125,14 @@ export default function AIAdvisorScreen() {
       tintLight: "#EFF6FF",
       tintDark: "rgba(59,130,246,0.35)",
       screen: "ExpertMarketplace" as const,
-      requiredTier: undefined as "pro" | "expert" | undefined,
+      requiredTier: undefined as "explorer" | "adventurer" | undefined,
     },
   ];
 
-  const canAccessFeature = (requiredTier?: "pro" | "expert") => {
+  const canAccessFeature = (requiredTier?: "explorer" | "adventurer") => {
     if (!requiredTier) return true;
-    if (requiredTier === "pro") return isPro;
-    if (requiredTier === "expert") return isPremium;
+    if (requiredTier === "explorer") return isPro;
+    if (requiredTier === "adventurer") return isPremium;
     return false;
   };
 

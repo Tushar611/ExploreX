@@ -37,7 +37,7 @@ interface TierConfig {
 
 const TIERS: TierConfig[] = [
   {
-    id: 'free',
+    id: 'starter',
     name: 'Starter',
     iconName: 'compass-outline',
     gradient: ['#9CA3AF', '#78909C', '#607D8B'],
@@ -45,7 +45,7 @@ const TIERS: TierConfig[] = [
     tagline: 'Start your journey',
   },
   {
-    id: 'pro',
+    id: 'explorer',
     name: 'Explorer',
     iconName: 'flame-outline',
     gradient: ['#FF8C42', '#F97316', '#EA580C'],
@@ -55,7 +55,7 @@ const TIERS: TierConfig[] = [
     packageId: '$rc_monthly',
   },
   {
-    id: 'expert',
+    id: 'adventurer',
     name: 'Adventurer',
     iconName: 'diamond-outline',
     gradient: ['#A78BFA', '#8B5CF6', '#7C3AED'],
@@ -92,7 +92,7 @@ export default function SubscriptionScreen() {
     presentPaywall,
   } = useSubscription();
   
-  const [selectedTier, setSelectedTier] = useState<SubscriptionTier>(currentTier === 'free' ? 'pro' : currentTier);
+  const [selectedTier, setSelectedTier] = useState<SubscriptionTier>(currentTier === 'starter' ? 'explorer' : currentTier);
   const [isPurchasing, setIsPurchasing] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
 
@@ -102,7 +102,7 @@ export default function SubscriptionScreen() {
         (p) => p.identifier === tierConfig.packageId,
       );
       if (pkg) {
-        if (tierConfig.id === 'expert') {
+        if (tierConfig.id === 'adventurer') {
           return pkg.product.priceString + "/yr";
         }
         if (tierConfig.id === 'lifetime') {
@@ -115,7 +115,7 @@ export default function SubscriptionScreen() {
   };
 
   const handlePurchase = async () => {
-    if (selectedTier === 'free' || selectedTier === currentTier) return;
+    if (selectedTier === 'starter' || selectedTier === currentTier) return;
     
     const tierConfig = TIERS.find(t => t.id === selectedTier);
     const packageId = tierConfig?.packageId || selectedTier;
@@ -346,7 +346,7 @@ export default function SubscriptionScreen() {
         </Animated.View>
 
         <Animated.View entering={FadeInUp.delay(600).duration(500)} style={styles.actionsContainer}>
-          {selectedTier !== 'free' && selectedTier !== currentTier ? (
+          {selectedTier !== 'starter' && selectedTier !== currentTier ? (
             <Pressable onPress={handlePurchase} disabled={isPurchasing} style={styles.purchaseButtonWrapper}>
               <LinearGradient
                 colors={selectedTierConfig ? selectedTierConfig.gradient : ['#E8744F', '#F4A261', '#F97316']}
@@ -367,7 +367,7 @@ export default function SubscriptionScreen() {
                     <ThemedText style={styles.purchaseText}>
                       {selectedTier === 'lifetime'
                         ? `Get Lifetime Access - ${getPackagePrice(TIERS[3])}`
-                        : `Upgrade to ${selectedTierConfig?.name || 'Pro'} - ${getPackagePrice(selectedTierConfig || TIERS[1])}`}
+                        : `Upgrade to ${selectedTierConfig?.name || 'Explorer'} - ${getPackagePrice(selectedTierConfig || TIERS[1])}`}
                     </ThemedText>
                   </>
                 )}

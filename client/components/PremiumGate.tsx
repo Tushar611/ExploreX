@@ -19,7 +19,7 @@ import { useSubscription, SubscriptionTier } from "@/context/SubscriptionContext
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
 interface PremiumGateProps {
-  requiredTier: "pro" | "expert";
+  requiredTier: "explorer" | "adventurer";
   featureName: string;
   featureDescription?: string;
   children: React.ReactNode;
@@ -34,7 +34,7 @@ export function PremiumGate({
   const { isPro, isPremium, tier } = useSubscription();
 
   const hasAccess =
-    requiredTier === "pro" ? isPro : isPremium;
+    requiredTier === "explorer" ? isPro : isPremium;
 
   if (hasAccess) {
     return <>{children}</>;
@@ -50,7 +50,7 @@ export function PremiumGate({
 }
 
 interface PremiumGateOverlayProps {
-  requiredTier: "pro" | "expert";
+  requiredTier: "explorer" | "adventurer";
   featureName: string;
   featureDescription?: string;
 }
@@ -64,9 +64,9 @@ function PremiumGateOverlay({
   const navigation = useNavigation<any>();
   const { presentPaywall, isConfigured } = useSubscription();
 
-  const tierLabel = requiredTier === "pro" ? "Explorer" : "Adventurer";
+  const tierLabel = requiredTier === "explorer" ? "Explorer" : "Adventurer";
   const gradient: [string, string, string] =
-    requiredTier === "pro"
+    requiredTier === "explorer"
       ? ["#FF8C42", "#F97316", "#EA580C"]
       : ["#A78BFA", "#8B5CF6", "#7C3AED"];
 
@@ -136,13 +136,13 @@ function PremiumGateOverlay({
 }
 
 interface PremiumBadgeProps {
-  requiredTier?: "pro" | "expert";
+  requiredTier?: "explorer" | "adventurer";
   small?: boolean;
 }
 
-export function PremiumBadge({ requiredTier = "pro", small = false }: PremiumBadgeProps) {
+export function PremiumBadge({ requiredTier = "explorer", small = false }: PremiumBadgeProps) {
   const gradient: [string, string] =
-    requiredTier === "pro" ? ["#FF8C42", "#EA580C"] : ["#A78BFA", "#7C3AED"];
+    requiredTier === "explorer" ? ["#FF8C42", "#EA580C"] : ["#A78BFA", "#7C3AED"];
 
   return (
     <LinearGradient
@@ -158,7 +158,7 @@ export function PremiumBadge({ requiredTier = "pro", small = false }: PremiumBad
         style={{ marginRight: small ? 2 : 4 }}
       />
       <ThemedText style={[styles.badgeText, small && styles.badgeTextSmall]}>
-        {requiredTier === "pro" ? "EXPLORER" : "ADVENTURER"}
+        {requiredTier === "explorer" ? "EXPLORER" : "ADVENTURER"}
       </ThemedText>
     </LinearGradient>
   );

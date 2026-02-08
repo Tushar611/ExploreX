@@ -456,9 +456,9 @@ export default function ProfileScreen() {
               colors={
                 currentTier === "lifetime"
                   ? ["#F59E0B", "#D97706"]
-                  : currentTier === "expert"
+                  : currentTier === "adventurer"
                     ? ["#8B5CF6", "#6D28D9"]
-                    : currentTier === "pro"
+                    : currentTier === "explorer"
                       ? ["#FF8C42", "#F9A826"]
                       : ["#E8744F", "#F4A261"]
               }
@@ -471,8 +471,8 @@ export default function ProfileScreen() {
                   <Ionicons
                     name={
                       currentTier === "lifetime" ? "infinite"
-                        : currentTier === "expert" ? "diamond"
-                          : currentTier === "pro" ? "flame"
+                        : currentTier === "adventurer" ? "diamond"
+                          : currentTier === "explorer" ? "flame"
                             : "rocket"
                     }
                     size={22}
@@ -482,16 +482,16 @@ export default function ProfileScreen() {
                 <View>
                   <ThemedText style={styles.upgradeTitle}>
                     {currentTier === "lifetime" ? "Lifetime Member"
-                      : currentTier === "free" ? "Upgrade"
-                        : currentTier === "pro" ? "Go Adventurer"
+                      : currentTier === "starter" ? "Upgrade"
+                        : currentTier === "explorer" ? "Go Adventurer"
                           : "Go Lifetime"}
                   </ThemedText>
                   <ThemedText style={styles.upgradeSubtitle}>
                     {currentTier === "lifetime"
                       ? "You have unlimited access forever"
-                      : currentTier === "free"
+                      : currentTier === "starter"
                         ? "Unlock unlimited features"
-                        : currentTier === "pro"
+                        : currentTier === "explorer"
                           ? "Get the ultimate experience"
                           : "One-time payment, forever free"}
                   </ThemedText>

@@ -19,12 +19,12 @@ import {
   identifyUser,
   logoutUser,
   getCustomerInfo,
-  ENTITLEMENT_PRO,
+  ENTITLEMENT_EXPLORER,
   ENTITLEMENT_ADVENTURER,
   ENTITLEMENT_LIFETIME,
 } from "@/services/revenuecat";
 
-export type SubscriptionTier = "free" | "pro" | "expert" | "lifetime";
+export type SubscriptionTier = "starter" | "explorer" | "adventurer" | "lifetime";
 
 interface SubscriptionContextType {
   tier: SubscriptionTier;
@@ -48,7 +48,7 @@ const SubscriptionContext = createContext<SubscriptionContextType | undefined>(
 );
 
 const TIER_FEATURES: Record<SubscriptionTier, string[]> = {
-  free: [
+  starter: [
     "2 Radar scans per day",
     "2 Compatibility checks per day",
     "Limited AI Advisor access",
@@ -56,7 +56,7 @@ const TIER_FEATURES: Record<SubscriptionTier, string[]> = {
     "Can message matches",
     "View Activities only",
   ],
-  pro: [
+  explorer: [
     "15 Radar scans per day",
     "15 Compatibility checks per day",
     "Unlimited AI Advisor access",
@@ -64,7 +64,7 @@ const TIER_FEATURES: Record<SubscriptionTier, string[]> = {
     "Priority visibility in Discover",
     "Explorer Badge",
   ],
-  expert: [
+  adventurer: [
     "Unlimited Radar",
     "Unlimited Compatibility",
     "Full AI Van Build Advisor",
@@ -90,16 +90,16 @@ export const TIER_LIMITS: Record<
   SubscriptionTier,
   { activities: number; aiChats: number; radarScans: number; compatChecks: number }
 > = {
-  free: { activities: 2, aiChats: 10, radarScans: 2, compatChecks: 2 },
-  pro: { activities: 10, aiChats: 25, radarScans: 15, compatChecks: 15 },
-  expert: { activities: -1, aiChats: -1, radarScans: -1, compatChecks: -1 },
+  starter: { activities: 2, aiChats: 10, radarScans: 2, compatChecks: 2 },
+  explorer: { activities: 10, aiChats: 25, radarScans: 15, compatChecks: 15 },
+  adventurer: { activities: -1, aiChats: -1, radarScans: -1, compatChecks: -1 },
   lifetime: { activities: -1, aiChats: -1, radarScans: -1, compatChecks: -1 },
 };
 
 const TIER_PRICES: Record<SubscriptionTier, string> = {
-  free: "$0/month",
-  pro: "$6.99/month",
-  expert: "$15.99/month",
+  starter: "$0/month",
+  explorer: "$6.99/month",
+  adventurer: "$15.99/month",
   lifetime: "$99.99",
 };
 
@@ -111,18 +111,16 @@ function getTierFromEntitlements(activeEntitlements: string[]): SubscriptionTier
     return "lifetime";
   if (
     activeEntitlements.includes(ENTITLEMENT_ADVENTURER) ||
-    activeEntitlements.includes("expert") ||
     activeEntitlements.includes("adventurer")
   )
-    return "expert";
+    return "adventurer";
   if (
-    activeEntitlements.includes(ENTITLEMENT_PRO) ||
-    activeEntitlements.includes("pro") ||
+    activeEntitlements.includes(ENTITLEMENT_EXPLORER) ||
     activeEntitlements.includes("explorer") ||
     activeEntitlements.includes("Nomad Connect Pro")
   )
-    return "pro";
-  return "free";
+    return "explorer";
+  return "starter";
 }
 
 function getTierFromCustomerInfo(info: CustomerInfo): SubscriptionTier {
@@ -133,18 +131,18 @@ function getTierFromCustomerInfo(info: CustomerInfo): SubscriptionTier {
   }
 
   if (info.entitlements.active[ENTITLEMENT_ADVENTURER]?.isActive) {
-    return "expert";
+    return "adventurer";
   }
 
-  if (info.entitlements.active[ENTITLEMENT_PRO]?.isActive) {
-    return "pro";
+  if (info.entitlements.active[ENTITLEMENT_EXPLORER]?.isActive) {
+    return "explorer";
   }
 
   return getTierFromEntitlements(activeEntitlements);
 }
 
 export function SubscriptionProvider({ children }: { children: ReactNode }) {
-  const [tier, setTier] = useState<SubscriptionTier>("free");
+  const [tier, setTier] = useState<SubscriptionTier>("starter");
   const [isLoading, setIsLoading] = useState(true);
   const [offerings, setOfferings] = useState<PurchasesOffering | null>(null);
   const [customerInfo, setCustomerInfo] = useState<CustomerInfo | null>(null);
@@ -217,11 +215,11 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
       if (packageId.includes("lifetime")) {
         setTier("lifetime");
         setUserEntitlements(["lifetime"]);
-      } else if (packageId.includes("adventurer") || packageId.includes("expert") || packageId.includes("annual") || packageId === "expert") {
-        setTier("expert");
+      } else if (packageId.includes("adventurer") || packageId.includes("annual")) {
+        setTier("adventurer");
         setUserEntitlements(["adventurer"]);
-      } else if (packageId.includes("explorer") || packageId.includes("pro") || packageId.includes("monthly") || packageId.includes("yearly") || packageId === "pro") {
-        setTier("pro");
+      } else if (packageId.includes("explorer") || packageId.includes("monthly") || packageId.includes("yearly")) {
+        setTier("explorer");
         setUserEntitlements(["explorer"]);
       }
       return;
@@ -274,18 +272,18 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
         (p) => p.packageType === "ANNUAL" || p.identifier === "$rc_annual",
       );
 
-      if (t === "pro" && monthly) {
+      if (t === "explorer" && monthly) {
         return monthly.product.priceString + "/month";
       }
-      if ((t === "expert" || t === "lifetime") && yearly) {
+      if ((t === "adventurer" || t === "lifetime") && yearly) {
         return yearly.product.priceString + "/year";
       }
     }
     return TIER_PRICES[t];
   }, [offerings]);
 
-  const isPro = tier === "pro" || tier === "expert" || tier === "lifetime";
-  const isPremium = tier === "expert" || tier === "lifetime";
+  const isPro = tier === "explorer" || tier === "adventurer" || tier === "lifetime";
+  const isPremium = tier === "adventurer" || tier === "lifetime";
 
   const value = useMemo(
     () => ({

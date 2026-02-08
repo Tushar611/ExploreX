@@ -10,7 +10,7 @@ const REVENUECAT_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_API_KEY;
 const REVENUECAT_IOS_KEY = process.env.EXPO_PUBLIC_REVENUECAT_IOS_KEY;
 const REVENUECAT_ANDROID_KEY = process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_KEY;
 
-const ENTITLEMENT_PRO = "explorer";
+const ENTITLEMENT_EXPLORER = "explorer";
 const ENTITLEMENT_ADVENTURER = "adventurer";
 const ENTITLEMENT_LIFETIME = "lifetime";
 
@@ -118,7 +118,7 @@ export async function checkUserEntitlements(): Promise<{
     const activeEntitlements = Object.keys(info.entitlements.active);
 
     const hasExplorer =
-      info.entitlements.active[ENTITLEMENT_PRO]?.isActive === true ||
+      info.entitlements.active[ENTITLEMENT_EXPLORER]?.isActive === true ||
       activeEntitlements.includes("pro") ||
       activeEntitlements.includes("Nomad Connect Pro");
 
@@ -222,4 +222,4 @@ export async function purchaseConsultation(expertName: string, amount: number): 
   }
 }
 
-export { isConfigured as isRevenueCatConfigured, ENTITLEMENT_PRO, ENTITLEMENT_ADVENTURER, ENTITLEMENT_LIFETIME };
+export { isConfigured as isRevenueCatConfigured, ENTITLEMENT_EXPLORER, ENTITLEMENT_ADVENTURER, ENTITLEMENT_LIFETIME };

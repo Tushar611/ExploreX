@@ -102,7 +102,7 @@ export function CompatibilityCard({
 
   const checkCompatibility = async () => {
     if (!user?.id) return;
-    if (tier === "free") {
+    if (tier === "starter") {
       navigation.navigate("Subscription");
       return;
     }

@@ -38,20 +38,20 @@ export default function CustomerCenterScreen() {
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const tierName =
-    tier === "free"
+    tier === "starter"
       ? "Starter (Free)"
-      : tier === "pro"
+      : tier === "explorer"
         ? "Explorer ($6.99/mo)"
-        : tier === "expert"
+        : tier === "adventurer"
           ? "Adventurer ($15.99/mo)"
           : "Lifetime";
 
   const tierGradient: [string, string] =
-    tier === "free"
+    tier === "starter"
       ? ["#9CA3AF", "#607D8B"]
-      : tier === "pro"
+      : tier === "explorer"
         ? ["#FF8C42", "#EA580C"]
-        : tier === "expert"
+        : tier === "adventurer"
           ? ["#A78BFA", "#7C3AED"]
           : ["#F59E0B", "#B45309"];
 
@@ -174,11 +174,11 @@ export default function CustomerCenterScreen() {
             >
               <Ionicons
                 name={
-                  tier === "free"
+                  tier === "starter"
                     ? "compass-outline"
-                    : tier === "pro"
+                    : tier === "explorer"
                       ? "flame-outline"
-                      : tier === "expert"
+                      : tier === "adventurer"
                         ? "diamond-outline"
                         : "infinite-outline"
                 }
@@ -192,7 +192,7 @@ export default function CustomerCenterScreen() {
             <ThemedText
               style={[styles.planStatus, { color: theme.textSecondary }]}
             >
-              {tier === "free"
+              {tier === "starter"
                 ? "No active subscription"
                 : "Active subscription"}
             </ThemedText>
@@ -267,7 +267,7 @@ export default function CustomerCenterScreen() {
               Actions
             </ThemedText>
 
-            {tier === "free" && (
+            {tier === "starter" && (
               <Pressable
                 style={styles.actionRow}
                 onPress={() => navigation.navigate("Subscription" as never)}
@@ -290,7 +290,7 @@ export default function CustomerCenterScreen() {
               </Pressable>
             )}
 
-            {tier !== "free" && (
+            {tier !== "starter" && (
               <Pressable
                 style={styles.actionRow}
                 onPress={handleManageSubscription}
