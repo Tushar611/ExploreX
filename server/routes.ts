@@ -1618,9 +1618,13 @@ Return ONLY this JSON structure:
   // ==================== SOCIAL DISCOVERY RADAR ====================
 
   const RADAR_LIMITS: Record<string, number> = {
+    starter: 2,
     free: 2,
+    explorer: 15,
     pro: 15,
+    adventurer: -1,
     expert: -1,
+    lifetime: -1,
   };
 
   app.post("/api/radar/update-location", async (req: Request, res: Response) => {
@@ -1802,6 +1806,42 @@ Return ONLY this JSON structure:
         .filter((u: any) => u.distance <= radius)
         .sort((a: any, b: any) => a.distance - b.distance);
 
+      // Fetch nearby upcoming activities
+      const now = new Date().toISOString();
+      const { data: allActivities } = await sb
+        .from('activities')
+        .select('*')
+        .gte('date', now)
+        .order('date', { ascending: true })
+        .limit(50);
+
+      const nearbyActivities = (allActivities || [])
+        .filter((act: any) => {
+          if (!act.latitude || !act.longitude) return false;
+          const aLat = parseFloat(act.latitude);
+          const aLng = parseFloat(act.longitude);
+          const dLat = ((aLat - lat) * Math.PI) / 180;
+          const dLng = ((aLng - lng) * Math.PI) / 180;
+          const a2 = Math.sin(dLat / 2) ** 2 + Math.cos((lat * Math.PI) / 180) * Math.cos((aLat * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+          const dist = 6371 * 2 * Math.atan2(Math.sqrt(a2), Math.sqrt(1 - a2));
+          (act as any)._distance = Math.round(dist * 10) / 10;
+          return dist <= radius;
+        })
+        .slice(0, 10)
+        .map((act: any) => ({
+          id: act.id,
+          title: act.title,
+          description: act.description,
+          type: act.category || "other",
+          location: act.location,
+          date: act.date,
+          distance: act._distance,
+          attendeeCount: (act.attendee_ids || []).length,
+          maxAttendees: act.max_attendees ? parseInt(act.max_attendees) : undefined,
+          imageUrl: act.image_url,
+          hostId: act.host_id,
+        }));
+
       // Increment scan count
       await sb
         .from('user_profiles')
@@ -1812,6 +1852,7 @@ Return ONLY this JSON structure:
 
       res.json({
         users: nearbyUsers,
+        activities: nearbyActivities,
         scansUsed: (profile.radar_scans_this_week || 0) + 1,
         scansLimit: limit,
       });
@@ -1836,6 +1877,125 @@ Return ONLY this JSON structure:
     } catch (error) {
       console.error("Toggle visibility error:", error);
       res.status(500).json({ error: "Failed to toggle visibility" });
+    }
+  });
+
+  // ==================== RADAR CHAT REQUESTS ====================
+
+  app.post("/api/radar/chat-request", async (req: Request, res: Response) => {
+    try {
+      const { senderId, receiverId, senderName, senderPhoto, receiverName, receiverPhoto, message } = req.body;
+      if (!senderId || !receiverId) {
+        return res.status(400).json({ error: "senderId and receiverId are required" });
+      }
+
+      const sb = getSupabase();
+
+      const { data: existing } = await sb
+        .from('radar_chat_requests')
+        .select('id, status')
+        .or(`and(sender_id.eq.${senderId},receiver_id.eq.${receiverId}),and(sender_id.eq.${receiverId},receiver_id.eq.${senderId})`)
+        .in('status', ['pending', 'accepted']);
+
+      if (existing && existing.length > 0) {
+        const req = existing[0];
+        if (req.status === 'accepted') {
+          return res.json({ alreadyConnected: true, requestId: req.id });
+        }
+        return res.json({ alreadyRequested: true, requestId: req.id });
+      }
+
+      const id = `cr_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+      const { error } = await sb
+        .from('radar_chat_requests')
+        .insert({
+          id,
+          sender_id: senderId,
+          receiver_id: receiverId,
+          sender_name: senderName || '',
+          sender_photo: senderPhoto || '',
+          receiver_name: receiverName || '',
+          receiver_photo: receiverPhoto || '',
+          message: message || '',
+          status: 'pending',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+
+      if (error) throw error;
+      res.json({ success: true, requestId: id });
+    } catch (error) {
+      console.error("Send chat request error:", error);
+      res.status(500).json({ error: "Failed to send chat request" });
+    }
+  });
+
+  app.get("/api/radar/chat-requests/:userId", async (req: Request, res: Response) => {
+    try {
+      const sb = getSupabase();
+      const userId = req.params.userId;
+
+      const { data: received } = await sb
+        .from('radar_chat_requests')
+        .select('*')
+        .eq('receiver_id', userId)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false });
+
+      const { data: sent } = await sb
+        .from('radar_chat_requests')
+        .select('*')
+        .eq('sender_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(20);
+
+      res.json({
+        received: received || [],
+        sent: sent || [],
+      });
+    } catch (error) {
+      console.error("Get chat requests error:", error);
+      res.json({ received: [], sent: [] });
+    }
+  });
+
+  app.post("/api/radar/chat-request/:requestId/respond", async (req: Request, res: Response) => {
+    try {
+      const { action } = req.body;
+      if (!['accepted', 'declined'].includes(action)) {
+        return res.status(400).json({ error: "action must be 'accepted' or 'declined'" });
+      }
+
+      const sb = getSupabase();
+      const { error } = await sb
+        .from('radar_chat_requests')
+        .update({ status: action, updated_at: new Date().toISOString() })
+        .eq('id', req.params.requestId);
+
+      if (error) throw error;
+
+      if (action === 'accepted') {
+        const { data: request } = await sb
+          .from('radar_chat_requests')
+          .select('*')
+          .eq('id', req.params.requestId)
+          .single();
+
+        if (request) {
+          const matchId = `match_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+          await sb.from('matches').insert({
+            id: matchId,
+            user_a_id: request.sender_id,
+            user_b_id: request.receiver_id,
+            created_at: new Date().toISOString(),
+          });
+        }
+      }
+
+      res.json({ success: true, status: action });
+    } catch (error) {
+      console.error("Respond to chat request error:", error);
+      res.status(500).json({ error: "Failed to respond to chat request" });
     }
   });
 

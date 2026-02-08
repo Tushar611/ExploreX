@@ -219,6 +219,22 @@ export const consultationBookings = pgTable("consultation_bookings", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+export const radarChatRequests = pgTable("radar_chat_requests", {
+  id: varchar("id")
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  senderId: varchar("sender_id").notNull(),
+  receiverId: varchar("receiver_id").notNull(),
+  status: text("status").default("pending"),
+  senderName: text("sender_name"),
+  senderPhoto: text("sender_photo"),
+  receiverName: text("receiver_name"),
+  receiverPhoto: text("receiver_photo"),
+  message: text("message"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,
@@ -232,6 +248,7 @@ export type ActivityParticipant = typeof activityParticipants.$inferSelect;
 export type ActivityChatMessage = typeof activityChatMessages.$inferSelect;
 export type UserProfile = typeof userProfiles.$inferSelect;
 export type CompatibilityResult = typeof compatibilityHistory.$inferSelect;
+export type RadarChatRequest = typeof radarChatRequests.$inferSelect;
 export type UserLocation = typeof userLocations.$inferSelect;
 export type TravelVerification = typeof travelVerification.$inferSelect;
 export type ExpertApplication = typeof expertApplications.$inferSelect;
