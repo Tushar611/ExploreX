@@ -50,7 +50,8 @@ async function checkSupabaseTables() {
     'ai_chat_sessions', 'activities', 'activity_chat_messages',
     'user_profiles', 'user_locations', 'compatibility_history',
     'swipes', 'matches', 'travel_verification',
-    'expert_applications', 'consultation_bookings', 'radar_chat_requests'
+    'expert_applications', 'consultation_bookings', 'radar_chat_requests',
+    'safety_ratings', 'sos_incidents', 'activity_moderators', 'chat_messages', 'forum_posts'
   ];
   for (const table of tables) {
     const col = table === 'user_locations' ? 'user_id' : 'id';
@@ -60,32 +61,6 @@ async function checkSupabaseTables() {
     } else {
       console.log(`[DB] Table '${table}': OK`);
     }
-  }
-}
-
-// In-memory chat request storage (fallback when Supabase table not available)
-interface ChatRequest {
-  id: string;
-  sender_id: string;
-  receiver_id: string;
-  status: string;
-  sender_name: string | null;
-  sender_photo: string | null;
-  receiver_name: string | null;
-  receiver_photo: string | null;
-  message: string | null;
-  created_at: string;
-  updated_at: string;
-}
-const chatRequestStore: ChatRequest[] = [];
-let radarTableAvailable = false;
-
-async function checkRadarTable() {
-  if (!supabaseAdmin) return;
-  const { error } = await supabaseAdmin.from('radar_chat_requests').select('id').limit(1);
-  radarTableAvailable = !error;
-  if (!radarTableAvailable) {
-    console.log("[DB] radar_chat_requests not in Supabase - using in-memory fallback. Run the SQL from scripts/create-supabase-tables.sql in your Supabase SQL Editor to create it.");
   }
 }
 
@@ -206,12 +181,6 @@ interface SOSIncident {
   notes?: string;
 }
 
-const activityMessages: Map<string, ActivityChatMessage[]> = new Map();
-const activityModerators: Map<string, ActivityModerator[]> = new Map();
-const activitiesStore: Activity[] = [];
-const safetyRatings: SafetyRating[] = [];
-const sosIncidents: SOSIncident[] = [];
-
 const VAN_BUILD_SYSTEM_PROMPT = `You are an expert van conversion advisor for the Nomad Connect app. You help van lifers and nomads with:
 - Van conversion planning and design
 - Electrical systems (solar, batteries, inverters)
@@ -248,7 +217,6 @@ Be realistic with current market prices. Consider DIY vs professional installati
 export async function registerRoutes(app: Express): Promise<Server> {
 
   checkSupabaseTables().catch(err => console.error("[DB] Table check failed:", err));
-  checkRadarTable().catch(err => console.error("[DB] Radar table check failed:", err));
 
   // Health check
   app.get("/api/health", (_req: Request, res: Response) => {
@@ -491,7 +459,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
       res.json(activities);
     } catch (error) {
       console.error("Failed to get activities:", error);
-      res.json(activitiesStore);
+      res.status(500).json({ error: "Failed to get activities" });
     }
   });
 
@@ -551,28 +519,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
       res.status(201).json(newActivity);
     } catch (error) {
       console.error("Failed to create activity in database:", error);
-      const newActivity: Activity = {
-        id: activityId,
-        title: activity.title || "New Activity",
-        description: activity.description || "",
-        type: (activity.type as Activity["type"]) || "other",
-        location: activity.location || "TBD",
-        latitude: activity.latitude,
-        longitude: activity.longitude,
-        date: activity.date || now,
-        startTime: activity.startTime,
-        duration: activity.duration,
-        hostId: user.id,
-        host: user,
-        attendeeIds: [],
-        attendees: [],
-        maxAttendees: activity.maxAttendees,
-        imageUrl: activity.imageUrl,
-        isCompleted: activity.isCompleted,
-        createdAt: now,
-      };
-      activitiesStore.unshift(newActivity);
-      res.status(201).json(newActivity);
+      res.status(500).json({ error: "Failed to create activity" });
     }
   });
 
@@ -612,15 +559,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
       res.json({ success: true });
     } catch (error) {
       console.error("Failed to join activity:", error);
-      const activity = activitiesStore.find((a) => a.id === activityId);
-      if (!activity) {
-        return res.status(404).json({ error: "Activity not found" });
-      }
-      if (!activity.attendeeIds.includes(user.id)) {
-        activity.attendeeIds.push(user.id);
-        activity.attendees.push(user);
-      }
-      res.json(activity);
+      res.status(500).json({ error: "Failed to join activity" });
     }
   });
 
@@ -651,16 +590,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
       res.json({ success: true });
     } catch (error) {
       console.error("Failed to delete activity:", error);
-      const idx = activitiesStore.findIndex((a) => a.id === activityId);
-      if (idx === -1) {
-        return res.status(404).json({ error: "Activity not found" });
-      }
-      const activity = activitiesStore[idx];
-      if (userId && activity.hostId !== userId) {
-        return res.status(403).json({ error: "Only the host can delete the activity" });
-      }
-      activitiesStore.splice(idx, 1);
-      res.json({ success: true });
+      res.status(500).json({ error: "Failed to delete activity" });
     }
   });
 
@@ -910,198 +840,363 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
   });
 
   // Get moderators for an activity
-  app.get("/api/activities/:activityId/moderators", (req: Request, res: Response) => {
+  app.get("/api/activities/:activityId/moderators", async (req: Request, res: Response) => {
     const { activityId } = req.params;
-    const moderators = activityModerators.get(activityId) || [];
-    res.json(moderators);
+    try {
+      const sb = getSupabase();
+      const { data, error } = await sb
+        .from('activity_moderators')
+        .select('*')
+        .eq('activity_id', activityId);
+      if (error) throw error;
+      const moderators = (data || []).map((row: any) => ({
+        activityId: row.activity_id,
+        userId: row.user_id,
+        isHost: row.is_host,
+        addedAt: row.added_at,
+      }));
+      res.json(moderators);
+    } catch (error) {
+      console.error("Failed to get moderators:", error);
+      res.status(500).json({ error: "Failed to get moderators" });
+    }
   });
 
   // Add a moderator (host only)
-  app.post("/api/activities/:activityId/moderators", (req: Request, res: Response) => {
+  app.post("/api/activities/:activityId/moderators", async (req: Request, res: Response) => {
     const { activityId } = req.params;
     const { userId, isHost } = req.body;
 
-    const moderator: ActivityModerator = {
-      activityId,
-      userId,
-      isHost: isHost || false,
-      addedAt: new Date().toISOString(),
-    };
+    try {
+      const sb = getSupabase();
+      const { data: existing } = await sb
+        .from('activity_moderators')
+        .select('id')
+        .eq('activity_id', activityId)
+        .eq('user_id', userId);
 
-    const moderators = activityModerators.get(activityId) || [];
-    if (!moderators.find(m => m.userId === userId)) {
-      moderators.push(moderator);
-      activityModerators.set(activityId, moderators);
+      if (existing && existing.length > 0) {
+        return res.json({ activityId, userId, isHost: isHost || false, addedAt: new Date().toISOString() });
+      }
+
+      const modId = `mod_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+      const now = new Date().toISOString();
+      const { error } = await sb
+        .from('activity_moderators')
+        .insert({
+          id: modId,
+          activity_id: activityId,
+          user_id: userId,
+          is_host: isHost || false,
+          added_at: now,
+        });
+      if (error) throw error;
+
+      res.status(201).json({ activityId, userId, isHost: isHost || false, addedAt: now });
+    } catch (error) {
+      console.error("Failed to add moderator:", error);
+      res.status(500).json({ error: "Failed to add moderator" });
     }
-
-    res.status(201).json(moderator);
   });
 
   // Remove a moderator (host only)
-  app.delete("/api/activities/:activityId/moderators/:userId", (req: Request, res: Response) => {
+  app.delete("/api/activities/:activityId/moderators/:userId", async (req: Request, res: Response) => {
     const { activityId, userId } = req.params;
 
-    const moderators = activityModerators.get(activityId) || [];
-    const filtered = moderators.filter(m => m.userId !== userId || m.isHost);
-    activityModerators.set(activityId, filtered);
-
-    res.json({ success: true });
+    try {
+      const sb = getSupabase();
+      const { error } = await sb
+        .from('activity_moderators')
+        .delete()
+        .eq('activity_id', activityId)
+        .eq('user_id', userId)
+        .eq('is_host', false);
+      if (error) throw error;
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Failed to remove moderator:", error);
+      res.status(500).json({ error: "Failed to remove moderator" });
+    }
   });
 
   // Initialize host as moderator when activity chat is accessed
-  app.post("/api/activities/:activityId/init-chat", (req: Request, res: Response) => {
+  app.post("/api/activities/:activityId/init-chat", async (req: Request, res: Response) => {
     const { activityId } = req.params;
     const { hostId } = req.body;
 
-    const moderators = activityModerators.get(activityId) || [];
-    if (!moderators.find(m => m.userId === hostId)) {
-      moderators.push({
-        activityId,
-        userId: hostId,
-        isHost: true,
-        addedAt: new Date().toISOString(),
-      });
-      activityModerators.set(activityId, moderators);
-    }
+    try {
+      const sb = getSupabase();
+      const { data: existing } = await sb
+        .from('activity_moderators')
+        .select('id')
+        .eq('activity_id', activityId)
+        .eq('user_id', hostId);
 
-    res.json({ success: true });
+      if (!existing || existing.length === 0) {
+        const modId = `mod_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+        const { error } = await sb
+          .from('activity_moderators')
+          .insert({
+            id: modId,
+            activity_id: activityId,
+            user_id: hostId,
+            is_host: true,
+            added_at: new Date().toISOString(),
+          });
+        if (error) throw error;
+      }
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Failed to init chat:", error);
+      res.status(500).json({ error: "Failed to initialize chat" });
+    }
   });
 
   // ==================== SAFETY RATING ROUTES ====================
 
   // Submit a safety rating for an activity
-  app.post("/api/safety-ratings", (req: Request, res: Response) => {
+  app.post("/api/safety-ratings", async (req: Request, res: Response) => {
     const { activityId, ratedByUserId, safetyScore, wasLocationPublic, hostWasTrustworthy } = req.body;
 
     if (!activityId || !ratedByUserId || !safetyScore) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    const existingRating = safetyRatings.find(
-      r => r.activityId === activityId && r.ratedByUserId === ratedByUserId
-    );
+    try {
+      const sb = getSupabase();
+      const { data: existingRating } = await sb
+        .from('safety_ratings')
+        .select('id')
+        .eq('activity_id', activityId)
+        .eq('rated_by_user_id', ratedByUserId);
 
-    if (existingRating) {
-      return res.status(400).json({ error: "You have already rated this activity" });
+      if (existingRating && existingRating.length > 0) {
+        return res.status(400).json({ error: "You have already rated this activity" });
+      }
+
+      const ratingId = `rating_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+      const now = new Date().toISOString();
+
+      const { error } = await sb
+        .from('safety_ratings')
+        .insert({
+          id: ratingId,
+          activity_id: activityId,
+          rated_by_user_id: ratedByUserId,
+          safety_score: safetyScore,
+          was_location_public: wasLocationPublic || false,
+          host_was_trustworthy: hostWasTrustworthy || false,
+          created_at: now,
+        });
+      if (error) throw error;
+
+      res.status(201).json({
+        id: ratingId,
+        activityId,
+        ratedByUserId,
+        safetyScore,
+        wasLocationPublic: wasLocationPublic || false,
+        hostWasTrustworthy: hostWasTrustworthy || false,
+        createdAt: now,
+      });
+    } catch (error) {
+      console.error("Failed to submit safety rating:", error);
+      res.status(500).json({ error: "Failed to submit safety rating" });
     }
-
-    const rating: SafetyRating = {
-      id: `rating_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      activityId,
-      ratedByUserId,
-      safetyScore,
-      wasLocationPublic: wasLocationPublic || false,
-      hostWasTrustworthy: hostWasTrustworthy || false,
-      createdAt: new Date().toISOString(),
-    };
-
-    safetyRatings.push(rating);
-    res.status(201).json(rating);
   });
 
   // Get safety ratings for an activity
-  app.get("/api/safety-ratings/:activityId", (req: Request, res: Response) => {
+  app.get("/api/safety-ratings/:activityId", async (req: Request, res: Response) => {
     const { activityId } = req.params;
-    const ratings = safetyRatings.filter(r => r.activityId === activityId);
-    
-    const averageSafetyScore = ratings.length > 0
-      ? ratings.reduce((sum, r) => sum + r.safetyScore, 0) / ratings.length
-      : 0;
-    
-    const publicLocationPercentage = ratings.length > 0
-      ? (ratings.filter(r => r.wasLocationPublic).length / ratings.length) * 100
-      : 0;
-    
-    const trustworthyHostPercentage = ratings.length > 0
-      ? (ratings.filter(r => r.hostWasTrustworthy).length / ratings.length) * 100
-      : 0;
 
-    res.json({
-      ratings,
-      summary: {
-        totalRatings: ratings.length,
-        averageSafetyScore: Math.round(averageSafetyScore * 10) / 10,
-        publicLocationPercentage: Math.round(publicLocationPercentage),
-        trustworthyHostPercentage: Math.round(trustworthyHostPercentage),
-      },
-    });
+    try {
+      const sb = getSupabase();
+      const { data, error } = await sb
+        .from('safety_ratings')
+        .select('*')
+        .eq('activity_id', activityId);
+      if (error) throw error;
+
+      const ratings = (data || []).map((r: any) => ({
+        id: r.id,
+        activityId: r.activity_id,
+        ratedByUserId: r.rated_by_user_id,
+        safetyScore: r.safety_score,
+        wasLocationPublic: r.was_location_public,
+        hostWasTrustworthy: r.host_was_trustworthy,
+        createdAt: r.created_at,
+      }));
+
+      const averageSafetyScore = ratings.length > 0
+        ? ratings.reduce((sum: number, r: any) => sum + r.safetyScore, 0) / ratings.length
+        : 0;
+
+      const publicLocationPercentage = ratings.length > 0
+        ? (ratings.filter((r: any) => r.wasLocationPublic).length / ratings.length) * 100
+        : 0;
+
+      const trustworthyHostPercentage = ratings.length > 0
+        ? (ratings.filter((r: any) => r.hostWasTrustworthy).length / ratings.length) * 100
+        : 0;
+
+      res.json({
+        ratings,
+        summary: {
+          totalRatings: ratings.length,
+          averageSafetyScore: Math.round(averageSafetyScore * 10) / 10,
+          publicLocationPercentage: Math.round(publicLocationPercentage),
+          trustworthyHostPercentage: Math.round(trustworthyHostPercentage),
+        },
+      });
+    } catch (error) {
+      console.error("Failed to get safety ratings:", error);
+      res.status(500).json({ error: "Failed to get safety ratings" });
+    }
   });
 
   // SOS Emergency endpoints
   app.post("/api/sos/log", async (req: Request, res: Response) => {
     const { userId, userName, location, emergencyContact, timestamp, message } = req.body;
-    
-    const incident: SOSIncident = {
-      id: `sos_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      userId,
-      userName,
-      location,
-      emergencyContact,
-      timestamp: timestamp || new Date().toISOString(),
-      resolved: false,
-    };
-    
-    sosIncidents.push(incident);
-    console.log("[SOS] Emergency incident logged:", incident);
 
-    if (emergencyContact?.email && message) {
-      try {
-        const emailjsServiceId = process.env.EMAILJS_SERVICE_ID;
-        const emailjsTemplateId = process.env.EMAILJS_TEMPLATE_ID;
-        const emailjsPublicKey = process.env.EMAILJS_PUBLIC_KEY;
-        const emailjsPrivateKey = process.env.EMAILJS_PRIVATE_KEY;
+    const incidentId = `sos_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+    const ts = timestamp || new Date().toISOString();
 
-        if (emailjsServiceId && emailjsTemplateId && emailjsPublicKey) {
-          await fetch('https://api.emailjs.com/api/v1.0/email/send', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              service_id: emailjsServiceId,
-              template_id: emailjsTemplateId,
-              user_id: emailjsPublicKey,
-              accessToken: emailjsPrivateKey,
-              template_params: {
-                to_email: emergencyContact.email,
-                to_name: emergencyContact.name || "Emergency Contact",
-                from_name: "Nomad Connect SOS",
-                message: message,
-              },
-            }),
-          });
-          console.log("[SOS] Emergency email sent to:", emergencyContact.email);
+    try {
+      const sb = getSupabase();
+      const { error } = await sb
+        .from('sos_incidents')
+        .insert({
+          id: incidentId,
+          user_id: userId,
+          user_name: userName,
+          latitude: location?.latitude || null,
+          longitude: location?.longitude || null,
+          emergency_contact_name: emergencyContact?.name || null,
+          emergency_contact_phone: emergencyContact?.phone || null,
+          emergency_contact_email: emergencyContact?.email || null,
+          timestamp: ts,
+          resolved: false,
+          notes: null,
+        });
+      if (error) throw error;
+
+      console.log("[SOS] Emergency incident logged:", incidentId);
+
+      if (emergencyContact?.email && message) {
+        try {
+          const emailjsServiceId = process.env.EMAILJS_SERVICE_ID;
+          const emailjsTemplateId = process.env.EMAILJS_TEMPLATE_ID;
+          const emailjsPublicKey = process.env.EMAILJS_PUBLIC_KEY;
+          const emailjsPrivateKey = process.env.EMAILJS_PRIVATE_KEY;
+
+          if (emailjsServiceId && emailjsTemplateId && emailjsPublicKey) {
+            await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                service_id: emailjsServiceId,
+                template_id: emailjsTemplateId,
+                user_id: emailjsPublicKey,
+                accessToken: emailjsPrivateKey,
+                template_params: {
+                  to_email: emergencyContact.email,
+                  to_name: emergencyContact.name || "Emergency Contact",
+                  from_name: "Nomad Connect SOS",
+                  message: message,
+                },
+              }),
+            });
+            console.log("[SOS] Emergency email sent to:", emergencyContact.email);
+          }
+        } catch (emailErr) {
+          console.error("[SOS] Failed to send emergency email:", emailErr);
         }
-      } catch (emailErr) {
-        console.error("[SOS] Failed to send emergency email:", emailErr);
       }
+
+      res.json({ success: true, incidentId });
+    } catch (error) {
+      console.error("Failed to log SOS incident:", error);
+      res.status(500).json({ error: "Failed to log SOS incident" });
     }
-    
-    res.json({ success: true, incidentId: incident.id });
   });
 
-  app.get("/api/sos/incidents", (req: Request, res: Response) => {
+  app.get("/api/sos/incidents", async (req: Request, res: Response) => {
     const { userId } = req.query;
-    
-    if (userId) {
-      const userIncidents = sosIncidents.filter(i => i.userId === userId);
-      return res.json(userIncidents);
+
+    try {
+      const sb = getSupabase();
+      let query = sb.from('sos_incidents').select('*');
+      if (userId) {
+        query = query.eq('user_id', userId as string);
+      }
+      const { data, error } = await query.order('timestamp', { ascending: false });
+      if (error) throw error;
+
+      const incidents = (data || []).map((row: any) => ({
+        id: row.id,
+        userId: row.user_id,
+        userName: row.user_name,
+        location: row.latitude != null ? { latitude: row.latitude, longitude: row.longitude } : undefined,
+        emergencyContact: row.emergency_contact_name ? {
+          name: row.emergency_contact_name,
+          phone: row.emergency_contact_phone,
+          email: row.emergency_contact_email,
+        } : undefined,
+        timestamp: row.timestamp,
+        resolved: row.resolved,
+        notes: row.notes,
+      }));
+
+      res.json(incidents);
+    } catch (error) {
+      console.error("Failed to get SOS incidents:", error);
+      res.status(500).json({ error: "Failed to get SOS incidents" });
     }
-    
-    res.json(sosIncidents);
   });
 
-  app.patch("/api/sos/incidents/:incidentId", (req: Request, res: Response) => {
+  app.patch("/api/sos/incidents/:incidentId", async (req: Request, res: Response) => {
     const { incidentId } = req.params;
     const { resolved, notes } = req.body;
-    
-    const incident = sosIncidents.find(i => i.id === incidentId);
-    if (!incident) {
-      return res.status(404).json({ error: "Incident not found" });
+
+    try {
+      const sb = getSupabase();
+      const updateData: any = {};
+      if (resolved !== undefined) updateData.resolved = resolved;
+      if (notes) updateData.notes = notes;
+
+      const { data, error } = await sb
+        .from('sos_incidents')
+        .update(updateData)
+        .eq('id', incidentId)
+        .select()
+        .single();
+
+      if (error) {
+        if (error.code === 'PGRST116') {
+          return res.status(404).json({ error: "Incident not found" });
+        }
+        throw error;
+      }
+
+      res.json({
+        id: data.id,
+        userId: data.user_id,
+        userName: data.user_name,
+        location: data.latitude != null ? { latitude: data.latitude, longitude: data.longitude } : undefined,
+        emergencyContact: data.emergency_contact_name ? {
+          name: data.emergency_contact_name,
+          phone: data.emergency_contact_phone,
+          email: data.emergency_contact_email,
+        } : undefined,
+        timestamp: data.timestamp,
+        resolved: data.resolved,
+        notes: data.notes,
+      });
+    } catch (error) {
+      console.error("Failed to update SOS incident:", error);
+      res.status(500).json({ error: "Failed to update SOS incident" });
     }
-    
-    if (resolved !== undefined) incident.resolved = resolved;
-    if (notes) incident.notes = notes;
-    
-    res.json(incident);
   });
 
   // OTP Password Reset - Send OTP via EmailJS
@@ -1919,58 +2014,37 @@ Return ONLY this JSON structure:
       const id = `cr_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
       const nowStr = new Date().toISOString();
 
-      if (radarTableAvailable) {
-        const sb = getSupabase();
-        const { data: existing } = await sb
-          .from('radar_chat_requests')
-          .select('id, status')
-          .or(`and(sender_id.eq.${senderId},receiver_id.eq.${receiverId}),and(sender_id.eq.${receiverId},receiver_id.eq.${senderId})`)
-          .in('status', ['pending', 'accepted']);
+      const sb = getSupabase();
+      const { data: existing } = await sb
+        .from('radar_chat_requests')
+        .select('id, status')
+        .or(`and(sender_id.eq.${senderId},receiver_id.eq.${receiverId}),and(sender_id.eq.${receiverId},receiver_id.eq.${senderId})`)
+        .in('status', ['pending', 'accepted']);
 
-        if (existing && existing.length > 0) {
-          const match = existing[0];
-          if (match.status === 'accepted') {
-            return res.json({ alreadyConnected: true, requestId: match.id });
-          }
-          return res.json({ alreadyRequested: true, requestId: match.id });
+      if (existing && existing.length > 0) {
+        const match = existing[0];
+        if (match.status === 'accepted') {
+          return res.json({ alreadyConnected: true, requestId: match.id });
         }
-
-        const { error } = await sb
-          .from('radar_chat_requests')
-          .insert({
-            id,
-            sender_id: senderId,
-            receiver_id: receiverId,
-            sender_name: senderName || '',
-            sender_photo: senderPhoto || '',
-            receiver_name: receiverName || '',
-            receiver_photo: receiverPhoto || '',
-            message: message || '',
-            status: 'pending',
-            created_at: nowStr,
-            updated_at: nowStr,
-          });
-        if (error) throw error;
-      } else {
-        const existing = chatRequestStore.find(r =>
-          ((r.sender_id === senderId && r.receiver_id === receiverId) ||
-           (r.sender_id === receiverId && r.receiver_id === senderId)) &&
-          ['pending', 'accepted'].includes(r.status)
-        );
-        if (existing) {
-          if (existing.status === 'accepted') {
-            return res.json({ alreadyConnected: true, requestId: existing.id });
-          }
-          return res.json({ alreadyRequested: true, requestId: existing.id });
-        }
-        chatRequestStore.push({
-          id, sender_id: senderId, receiver_id: receiverId,
-          status: 'pending', sender_name: senderName || null,
-          sender_photo: senderPhoto || null, receiver_name: receiverName || null,
-          receiver_photo: receiverPhoto || null, message: message || null,
-          created_at: nowStr, updated_at: nowStr,
-        });
+        return res.json({ alreadyRequested: true, requestId: match.id });
       }
+
+      const { error } = await sb
+        .from('radar_chat_requests')
+        .insert({
+          id,
+          sender_id: senderId,
+          receiver_id: receiverId,
+          sender_name: senderName || '',
+          sender_photo: senderPhoto || '',
+          receiver_name: receiverName || '',
+          receiver_photo: receiverPhoto || '',
+          message: message || '',
+          status: 'pending',
+          created_at: nowStr,
+          updated_at: nowStr,
+        });
+      if (error) throw error;
 
       res.json({ success: true, requestId: id });
     } catch (error) {
@@ -1983,28 +2057,22 @@ Return ONLY this JSON structure:
     try {
       const userId = req.params.userId;
 
-      if (radarTableAvailable) {
-        const sb = getSupabase();
-        const { data: received } = await sb
-          .from('radar_chat_requests')
-          .select('*')
-          .eq('receiver_id', userId)
-          .eq('status', 'pending')
-          .order('created_at', { ascending: false });
+      const sb = getSupabase();
+      const { data: received } = await sb
+        .from('radar_chat_requests')
+        .select('*')
+        .eq('receiver_id', userId)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false });
 
-        const { data: sent } = await sb
-          .from('radar_chat_requests')
-          .select('*')
-          .eq('sender_id', userId)
-          .order('created_at', { ascending: false })
-          .limit(20);
+      const { data: sent } = await sb
+        .from('radar_chat_requests')
+        .select('*')
+        .eq('sender_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(20);
 
-        return res.json({ received: received || [], sent: sent || [] });
-      }
-
-      const received = chatRequestStore.filter(r => r.receiver_id === userId && r.status === 'pending');
-      const sent = chatRequestStore.filter(r => r.sender_id === userId).slice(-20);
-      res.json({ received, sent });
+      res.json({ received: received || [], sent: sent || [] });
     } catch (error) {
       console.error("Get chat requests error:", error);
       res.json({ received: [], sent: [] });
@@ -2020,51 +2088,28 @@ Return ONLY this JSON structure:
 
       const requestId = req.params.requestId;
 
-      if (radarTableAvailable) {
-        const sb = getSupabase();
-        const { error } = await sb
+      const sb = getSupabase();
+      const { error } = await sb
+        .from('radar_chat_requests')
+        .update({ status: action, updated_at: new Date().toISOString() })
+        .eq('id', requestId);
+      if (error) throw error;
+
+      if (action === 'accepted') {
+        const { data: request } = await sb
           .from('radar_chat_requests')
-          .update({ status: action, updated_at: new Date().toISOString() })
-          .eq('id', requestId);
-        if (error) throw error;
+          .select('*')
+          .eq('id', requestId)
+          .single();
 
-        if (action === 'accepted') {
-          const { data: request } = await sb
-            .from('radar_chat_requests')
-            .select('*')
-            .eq('id', requestId)
-            .single();
-
-          if (request) {
-            const matchId = `match_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-            await sb.from('matches').insert({
-              id: matchId,
-              user_a_id: request.sender_id,
-              user_b_id: request.receiver_id,
-              created_at: new Date().toISOString(),
-            });
-          }
-        }
-      } else {
-        const request = chatRequestStore.find(r => r.id === requestId);
         if (request) {
-          request.status = action;
-          request.updated_at = new Date().toISOString();
-
-          if (action === 'accepted') {
-            try {
-              const sb = getSupabase();
-              const matchId = `match_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-              await sb.from('matches').insert({
-                id: matchId,
-                user_a_id: request.sender_id,
-                user_b_id: request.receiver_id,
-                created_at: new Date().toISOString(),
-              });
-            } catch (e) {
-              console.error("Failed to create match from in-memory request:", e);
-            }
-          }
+          const matchId = `match_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+          await sb.from('matches').insert({
+            id: matchId,
+            user_a_id: request.sender_id,
+            user_b_id: request.receiver_id,
+            created_at: new Date().toISOString(),
+          });
         }
       }
 
@@ -3131,6 +3176,272 @@ Scoring rules:
     } catch (error) {
       console.error("Update consultation payment error:", error);
       res.status(500).json({ error: "Failed to update payment" });
+    }
+  });
+
+  // ==================== CHAT MESSAGES (Supabase) ====================
+
+  app.get("/api/messages/:matchId", async (req: Request, res: Response) => {
+    const { matchId } = req.params;
+    try {
+      const sb = getSupabase();
+      const { data, error } = await sb
+        .from('chat_messages')
+        .select('*')
+        .eq('match_id', matchId)
+        .order('created_at', { ascending: true });
+      if (error) throw error;
+      res.json(data || []);
+    } catch (error) {
+      console.error("Failed to get messages:", error);
+      res.status(500).json({ error: "Failed to get messages" });
+    }
+  });
+
+  app.post("/api/messages/:matchId", async (req: Request, res: Response) => {
+    const { matchId } = req.params;
+    const { senderId, content, type, photoUrl, fileUrl, fileName, audioUrl, audioDuration, replyTo, location } = req.body;
+
+    const msgId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+    const now = new Date().toISOString();
+
+    try {
+      const sb = getSupabase();
+      const { data, error } = await sb
+        .from('chat_messages')
+        .insert({
+          id: msgId,
+          match_id: matchId,
+          sender_id: senderId,
+          content: content || '',
+          type: type || 'text',
+          photo_url: photoUrl || null,
+          file_url: fileUrl || null,
+          file_name: fileName || null,
+          audio_url: audioUrl || null,
+          audio_duration: audioDuration || null,
+          reply_to: replyTo || null,
+          location: location || null,
+          reactions: {},
+          status: 'sent',
+          created_at: now,
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      res.status(201).json(data);
+    } catch (error) {
+      console.error("Failed to send message:", error);
+      res.status(500).json({ error: "Failed to send message" });
+    }
+  });
+
+  app.patch("/api/messages/:messageId", async (req: Request, res: Response) => {
+    const { messageId } = req.params;
+    const { content } = req.body;
+
+    try {
+      const sb = getSupabase();
+      const { data, error } = await sb
+        .from('chat_messages')
+        .update({ content, edited_at: new Date().toISOString() })
+        .eq('id', messageId)
+        .select()
+        .single();
+
+      if (error) {
+        if (error.code === 'PGRST116') {
+          return res.status(404).json({ error: "Message not found" });
+        }
+        throw error;
+      }
+
+      res.json(data);
+    } catch (error) {
+      console.error("Failed to edit message:", error);
+      res.status(500).json({ error: "Failed to edit message" });
+    }
+  });
+
+  app.delete("/api/messages/:messageId", async (req: Request, res: Response) => {
+    const { messageId } = req.params;
+
+    try {
+      const sb = getSupabase();
+      const { data, error } = await sb
+        .from('chat_messages')
+        .delete()
+        .eq('id', messageId)
+        .select('id');
+
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        return res.status(404).json({ error: "Message not found" });
+      }
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Failed to delete message:", error);
+      res.status(500).json({ error: "Failed to delete message" });
+    }
+  });
+
+  app.patch("/api/messages/:messageId/reactions", async (req: Request, res: Response) => {
+    const { messageId } = req.params;
+    const { userId, emoji } = req.body;
+
+    if (!userId || !emoji) {
+      return res.status(400).json({ error: "userId and emoji are required" });
+    }
+
+    try {
+      const sb = getSupabase();
+      const { data: msgData, error: getError } = await sb
+        .from('chat_messages')
+        .select('reactions')
+        .eq('id', messageId)
+        .single();
+
+      if (getError) {
+        if (getError.code === 'PGRST116') {
+          return res.status(404).json({ error: "Message not found" });
+        }
+        throw getError;
+      }
+
+      const reactions: Record<string, string[]> = msgData.reactions || {};
+      const current = new Set(reactions[emoji] || []);
+
+      if (current.has(userId)) {
+        current.delete(userId);
+      } else {
+        current.add(userId);
+      }
+
+      if (current.size === 0) {
+        delete reactions[emoji];
+      } else {
+        reactions[emoji] = Array.from(current);
+      }
+
+      const { error: updateError } = await sb
+        .from('chat_messages')
+        .update({ reactions })
+        .eq('id', messageId);
+      if (updateError) throw updateError;
+
+      res.json({ id: messageId, reactions });
+    } catch (error) {
+      console.error("Failed to toggle reaction:", error);
+      res.status(500).json({ error: "Failed to toggle reaction" });
+    }
+  });
+
+  // ==================== FORUM POSTS (Supabase) ====================
+
+  app.get("/api/forum/posts", async (_req: Request, res: Response) => {
+    try {
+      const sb = getSupabase();
+      const { data, error } = await sb
+        .from('forum_posts')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      res.json(data || []);
+    } catch (error) {
+      console.error("Failed to get forum posts:", error);
+      res.status(500).json({ error: "Failed to get forum posts" });
+    }
+  });
+
+  app.post("/api/forum/posts", async (req: Request, res: Response) => {
+    const { authorId, authorData, title, content, category } = req.body;
+
+    if (!authorId || !title) {
+      return res.status(400).json({ error: "authorId and title are required" });
+    }
+
+    const postId = `post_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+    const now = new Date().toISOString();
+
+    try {
+      const sb = getSupabase();
+      const { data, error } = await sb
+        .from('forum_posts')
+        .insert({
+          id: postId,
+          author_id: authorId,
+          author_data: authorData || null,
+          title,
+          content: content || '',
+          category: category || 'general',
+          upvotes: 0,
+          upvoted_by: [],
+          comment_count: 0,
+          created_at: now,
+          updated_at: now,
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      res.status(201).json(data);
+    } catch (error) {
+      console.error("Failed to create forum post:", error);
+      res.status(500).json({ error: "Failed to create forum post" });
+    }
+  });
+
+  app.post("/api/forum/posts/:postId/upvote", async (req: Request, res: Response) => {
+    const { postId } = req.params;
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
+
+    try {
+      const sb = getSupabase();
+      const { data: post, error: getError } = await sb
+        .from('forum_posts')
+        .select('upvotes, upvoted_by')
+        .eq('id', postId)
+        .single();
+
+      if (getError) {
+        if (getError.code === 'PGRST116') {
+          return res.status(404).json({ error: "Post not found" });
+        }
+        throw getError;
+      }
+
+      const upvotedBy: string[] = post.upvoted_by || [];
+      let newUpvotes = post.upvotes || 0;
+
+      if (upvotedBy.includes(userId)) {
+        const idx = upvotedBy.indexOf(userId);
+        upvotedBy.splice(idx, 1);
+        newUpvotes = Math.max(0, newUpvotes - 1);
+      } else {
+        upvotedBy.push(userId);
+        newUpvotes += 1;
+      }
+
+      const { data, error: updateError } = await sb
+        .from('forum_posts')
+        .update({
+          upvotes: newUpvotes,
+          upvoted_by: upvotedBy,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', postId)
+        .select()
+        .single();
+      if (updateError) throw updateError;
+
+      res.json(data);
+    } catch (error) {
+      console.error("Failed to upvote post:", error);
+      res.status(500).json({ error: "Failed to upvote post" });
     }
   });
 

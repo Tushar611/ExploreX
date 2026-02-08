@@ -215,3 +215,73 @@ CREATE TABLE IF NOT EXISTS radar_chat_requests (
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Safety ratings for activities
+CREATE TABLE IF NOT EXISTS safety_ratings (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  activity_id TEXT NOT NULL,
+  rated_by_user_id TEXT NOT NULL,
+  safety_score INTEGER NOT NULL,
+  was_location_public BOOLEAN DEFAULT false,
+  host_was_trustworthy BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- SOS emergency incidents
+CREATE TABLE IF NOT EXISTS sos_incidents (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  user_id TEXT NOT NULL,
+  user_name TEXT,
+  latitude DOUBLE PRECISION,
+  longitude DOUBLE PRECISION,
+  emergency_contact_name TEXT,
+  emergency_contact_phone TEXT,
+  emergency_contact_email TEXT,
+  timestamp TIMESTAMPTZ DEFAULT NOW(),
+  resolved BOOLEAN DEFAULT false,
+  notes TEXT
+);
+
+-- Activity moderators
+CREATE TABLE IF NOT EXISTS activity_moderators (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  activity_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  is_host BOOLEAN DEFAULT false,
+  added_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Chat messages between matched users
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  match_id TEXT NOT NULL,
+  sender_id TEXT NOT NULL,
+  content TEXT DEFAULT '',
+  type TEXT DEFAULT 'text',
+  photo_url TEXT,
+  file_url TEXT,
+  file_name TEXT,
+  audio_url TEXT,
+  audio_duration NUMERIC,
+  reply_to JSONB,
+  location JSONB,
+  reactions JSONB DEFAULT '{}'::jsonb,
+  status TEXT DEFAULT 'sent',
+  edited_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Forum posts
+CREATE TABLE IF NOT EXISTS forum_posts (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  author_id TEXT NOT NULL,
+  author_data JSONB,
+  title TEXT NOT NULL,
+  content TEXT DEFAULT '',
+  category TEXT DEFAULT 'general',
+  upvotes INTEGER DEFAULT 0,
+  upvoted_by JSONB DEFAULT '[]'::jsonb,
+  comment_count INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
