@@ -9,6 +9,7 @@ import React, {
   ReactNode,
 } from "react";
 import { PurchasesOffering, CustomerInfo } from "react-native-purchases";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   configureRevenueCat,
   getSubscriptions,
@@ -47,42 +48,33 @@ const SubscriptionContext = createContext<SubscriptionContextType | undefined>(
   undefined,
 );
 
+const TIER_STORAGE_KEY = "subscription_tier";
+const ENTITLEMENTS_STORAGE_KEY = "subscription_entitlements";
+
 const TIER_FEATURES: Record<SubscriptionTier, string[]> = {
   starter: [
     "2 Radar scans per day",
     "2 Compatibility checks per day",
-    "Limited AI Advisor access",
-    "Limited Discover swipes",
-    "Can message matches",
-    "View Activities only",
+    "15 AI Advisor chats per month",
+    "4 Activities per month",
   ],
   explorer: [
     "15 Radar scans per day",
     "15 Compatibility checks per day",
-    "Unlimited AI Advisor access",
-    "Basic Expert Marketplace access",
-    "Priority visibility in Discover",
-    "Explorer Badge",
+    "50 AI Advisor chats per month",
+    "15 Activities per month",
   ],
   adventurer: [
-    "Unlimited Radar",
-    "Unlimited Compatibility",
-    "Full AI Van Build Advisor",
-    "Full Expert Marketplace access",
-    "Activities posting + hosting",
-    "Adventurer Badge",
-    "Advanced match recommendations",
-    "Highest profile visibility",
+    "Unlimited Radar scans",
+    "Unlimited Compatibility checks",
+    "Unlimited AI Advisor chats",
+    "Unlimited Activities",
   ],
   lifetime: [
-    "Everything in Adventurer, forever",
-    "Unlimited Radar forever",
-    "Unlimited Compatibility forever",
-    "Full AI Van Build Advisor forever",
-    "Lifetime Adventurer Badge",
-    "Highest visibility forever",
-    "All future premium features included",
-    "One-time payment, no renewals",
+    "Unlimited Radar scans",
+    "Unlimited Compatibility checks",
+    "Unlimited AI Advisor chats",
+    "Unlimited Activities",
   ],
 };
 
@@ -90,8 +82,8 @@ export const TIER_LIMITS: Record<
   SubscriptionTier,
   { activities: number; aiChats: number; radarScans: number; compatChecks: number }
 > = {
-  starter: { activities: 2, aiChats: 10, radarScans: 2, compatChecks: 2 },
-  explorer: { activities: 10, aiChats: 25, radarScans: 15, compatChecks: 15 },
+  starter: { activities: 4, aiChats: 15, radarScans: 2, compatChecks: 2 },
+  explorer: { activities: 15, aiChats: 50, radarScans: 15, compatChecks: 15 },
   adventurer: { activities: -1, aiChats: -1, radarScans: -1, compatChecks: -1 },
   lifetime: { activities: -1, aiChats: -1, radarScans: -1, compatChecks: -1 },
 };
@@ -162,12 +154,27 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
   const handleCustomerInfoUpdate = useCallback((info: CustomerInfo) => {
     setCustomerInfo(info);
     const entitlements = Object.keys(info.entitlements.active);
+    const nextTier = getTierFromCustomerInfo(info);
     setUserEntitlements(entitlements);
-    setTier(getTierFromCustomerInfo(info));
+    setTier(nextTier);
+    AsyncStorage.setItem(TIER_STORAGE_KEY, nextTier).catch(() => {});
+    AsyncStorage.setItem(ENTITLEMENTS_STORAGE_KEY, JSON.stringify(entitlements)).catch(() => {});
   }, []);
 
   const initializePurchases = async () => {
     try {
+      const storedTier = await AsyncStorage.getItem(TIER_STORAGE_KEY);
+      if (storedTier === "starter" || storedTier === "explorer" || storedTier === "adventurer" || storedTier === "lifetime") {
+        setTier(storedTier);
+      }
+      const storedEntitlements = await AsyncStorage.getItem(ENTITLEMENTS_STORAGE_KEY);
+      if (storedEntitlements) {
+        try {
+          const parsed = JSON.parse(storedEntitlements);
+          if (Array.isArray(parsed)) setUserEntitlements(parsed);
+        } catch {}
+      }
+
       const success = await configureRevenueCat();
       setConfigured(success);
 
@@ -215,12 +222,21 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
       if (packageId.includes("lifetime")) {
         setTier("lifetime");
         setUserEntitlements(["lifetime"]);
-      } else if (packageId.includes("adventurer") || packageId.includes("annual")) {
+        AsyncStorage.setItem(TIER_STORAGE_KEY, "lifetime").catch(() => {});
+        AsyncStorage.setItem(ENTITLEMENTS_STORAGE_KEY, JSON.stringify(["lifetime"]))
+          .catch(() => {});
+      } else if (packageId.includes("adventurer")) {
         setTier("adventurer");
         setUserEntitlements(["adventurer"]);
+        AsyncStorage.setItem(TIER_STORAGE_KEY, "adventurer").catch(() => {});
+        AsyncStorage.setItem(ENTITLEMENTS_STORAGE_KEY, JSON.stringify(["adventurer"]))
+          .catch(() => {});
       } else if (packageId.includes("explorer") || packageId.includes("monthly") || packageId.includes("yearly")) {
         setTier("explorer");
         setUserEntitlements(["explorer"]);
+        AsyncStorage.setItem(TIER_STORAGE_KEY, "explorer").catch(() => {});
+        AsyncStorage.setItem(ENTITLEMENTS_STORAGE_KEY, JSON.stringify(["explorer"]))
+          .catch(() => {});
       }
       return;
     }
@@ -264,23 +280,23 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
 
   const getTierFeatures = useCallback((t: SubscriptionTier) => TIER_FEATURES[t], []);
   const getTierPrice = useCallback((t: SubscriptionTier) => {
-    if (offerings && offerings.availablePackages.length > 0) {
-      const monthly = offerings.availablePackages.find(
-        (p) => p.packageType === "MONTHLY" || p.identifier === "$rc_monthly",
-      );
-      const yearly = offerings.availablePackages.find(
-        (p) => p.packageType === "ANNUAL" || p.identifier === "$rc_annual",
-      );
+  if (offerings && offerings.availablePackages.length > 0) {
+    const monthly = offerings.availablePackages.find(
+      (p) => p.packageType === "MONTHLY" || p.identifier === "$rc_monthly",
+    );
+    const lifetime = offerings.availablePackages.find(
+      (p) => p.packageType === "LIFETIME" || p.identifier === "$rc_lifetime",
+    );
 
-      if (t === "explorer" && monthly) {
-        return monthly.product.priceString + "/month";
-      }
-      if ((t === "adventurer" || t === "lifetime") && yearly) {
-        return yearly.product.priceString + "/year";
-      }
+    if ((t === "explorer" || t === "adventurer") && monthly) {
+      return monthly.product.priceString + "/month";
     }
-    return TIER_PRICES[t];
-  }, [offerings]);
+    if (t === "lifetime" && lifetime) {
+      return lifetime.product.priceString;
+    }
+  }
+  return TIER_PRICES[t];
+}, [offerings]);
 
   const isPro = tier === "explorer" || tier === "adventurer" || tier === "lifetime";
   const isPremium = tier === "adventurer" || tier === "lifetime";
@@ -336,3 +352,6 @@ export function useSubscription() {
   }
   return context;
 }
+
+
+
