@@ -347,7 +347,7 @@ export default function DiscoverScreen() {
       <View style={[styles.headerInfo, { top: topBarTop }]}>
         <View style={styles.brandRowCenter}>
           <Image
-            source={require("../../attached_assets/icon_1770366574583.png")}
+            source={require("../../assets/images/icon.png")}
             style={styles.brandLogoIcon}
             contentFit="cover"
           />

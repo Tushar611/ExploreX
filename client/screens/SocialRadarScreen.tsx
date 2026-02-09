@@ -843,11 +843,14 @@ const styles = StyleSheet.create({
   scrollInner: {
     alignItems: "center",
     paddingBottom: 20,
+    flexGrow: 1,
+    justifyContent:"center",
   },
   radarArea: {
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 16,
+    paddingVertical: 32,
+    width: "100%",
   },
   radarOuter: {
     borderRadius: 999,
