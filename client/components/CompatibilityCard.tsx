@@ -187,11 +187,11 @@ export function CompatibilityCard({
           <View style={styles.limitHeader}>
             <Ionicons name="lock-closed" size={28} color="#FF8C42" />
             <ThemedText style={[styles.limitTitle, { color: theme.text }]}>
-              Weekly Limit Reached
+              Daily Limit Reached
             </ThemedText>
           </View>
           <ThemedText style={[styles.limitText, { color: theme.textSecondary }]}>
-            Upgrade your plan for more compatibility checks
+            Choose your plan to get more info about plans
           </ThemedText>
           <Pressable style={styles.upgradeButton} onPress={handleUpgrade}>
             <LinearGradient
@@ -200,7 +200,7 @@ export function CompatibilityCard({
               end={{ x: 1, y: 0 }}
               style={styles.upgradeGradient}
             >
-              <ThemedText style={styles.upgradeText}>Upgrade Now</ThemedText>
+              <ThemedText style={styles.upgradeText}>View Plans</ThemedText>
             </LinearGradient>
           </Pressable>
         </LinearGradient>
@@ -585,5 +585,6 @@ const styles = StyleSheet.create({
     fontWeight: "700" as const,
   },
 });
+
 
 

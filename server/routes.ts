@@ -1529,10 +1529,10 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
     expert: -1,
   };
 
-  function shouldResetWeekly(lastResetTimestamp: number): boolean {
+  function shouldResetDaily(lastResetTimestamp: number): boolean {
     const now = Date.now();
-    const oneWeek = 7 * 24 * 60 * 60 * 1000;
-    return now - lastResetTimestamp > oneWeek;
+    const oneDay = 24 * 60 * 60 * 1000;
+    return now - lastResetTimestamp > oneDay;
   }
 
   app.post("/api/compatibility/check", async (req: Request, res: Response) => {
@@ -1582,8 +1582,8 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
         return res.status(500).json({ error: "Failed to get or create profile" });
       }
 
-      // Check weekly reset
-      if (shouldResetWeekly(Number(profile.last_reset_timestamp) || 0)) {
+      // Check daily reset
+      if (shouldResetDaily(Number(profile.last_reset_timestamp) || 0)) {
         await sb
           .from('user_profiles')
           .update({
@@ -1600,7 +1600,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
       const limit = COMPATIBILITY_LIMITS[currentTier] ?? 2;
       if (limit !== -1 && (profile.compatibility_checks_this_week || 0) >= limit) {
         return res.status(403).json({
-          error: "Weekly compatibility check limit reached",
+          error: "Daily compatibility check limit reached",
           limit,
           used: profile.compatibility_checks_this_week,
           tier: currentTier,
@@ -1609,13 +1609,13 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
       }
 
       // Check for existing recent compatibility
-      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
       const { data: existingAB } = await sb
         .from('compatibility_history')
         .select('*')
         .eq('user_a', userAId)
         .eq('user_b', userBId)
-        .gte('created_at', sevenDaysAgo)
+        .gte('created_at', oneDayAgo)
         .order('created_at', { ascending: false })
         .limit(1);
 
@@ -1624,7 +1624,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
         .select('*')
         .eq('user_a', userBId)
         .eq('user_b', userAId)
-        .gte('created_at', sevenDaysAgo)
+        .gte('created_at', oneDayAgo)
         .order('created_at', { ascending: false })
         .limit(1);
 
@@ -1825,8 +1825,8 @@ Return ONLY this JSON structure:
         return res.status(500).json({ error: "Failed to get or create profile" });
       }
 
-      // Check weekly reset
-      if (shouldResetWeekly(Number(profile.last_reset_timestamp) || 0)) {
+      // Check daily reset
+      if (shouldResetDaily(Number(profile.last_reset_timestamp) || 0)) {
         await sb
           .from('user_profiles')
           .update({
@@ -1843,7 +1843,7 @@ Return ONLY this JSON structure:
       const limit = RADAR_LIMITS[currentTier] ?? 2;
       if (limit !== -1 && (profile.radar_scans_this_week || 0) >= limit) {
         return res.status(403).json({
-          error: "Weekly radar scan limit reached",
+          error: "Daily radar scan limit reached",
           limit,
           used: profile.radar_scans_this_week,
           tier: currentTier,
@@ -1874,7 +1874,7 @@ Return ONLY this JSON structure:
       const radius = radiusKm || 50;
       const latDelta = radius / 111.0;
       const lngDelta = radius / (111.0 * Math.cos((lat * Math.PI) / 180));
-      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
       const { data: nearbyLocs } = await sb
         .from('user_locations')
@@ -1884,7 +1884,7 @@ Return ONLY this JSON structure:
         .lte('lat', lat + latDelta)
         .gte('lng', lng - lngDelta)
         .lte('lng', lng + lngDelta)
-        .gte('updated_at', sevenDaysAgo)
+        .gte('updated_at', oneDayAgo)
         .limit(50);
 
       const nearbyUserIds = (nearbyLocs || []).map(l => l.user_id);
@@ -2137,7 +2137,7 @@ Return ONLY this JSON structure:
       const profile = data;
 
       // Check if we need to reset
-      if (shouldResetWeekly(Number(profile.last_reset_timestamp) || 0)) {
+      if (shouldResetDaily(Number(profile.last_reset_timestamp) || 0)) {
         await sb
           .from('user_profiles')
           .update({
@@ -3449,3 +3449,5 @@ Scoring rules:
 
   return httpServer;
 }
+
+
