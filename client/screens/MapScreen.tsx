@@ -100,6 +100,10 @@ const buildOsmMapHtml = (
   <script>
     const center = [${center.latitude}, ${center.longitude}];
     const map = L.map('map').setView(center, 9);
+    function setCenter(lat, lng, zoom) {
+      map.setView([lat, lng], zoom || map.getZoom());
+    }
+    window.setCenter = setCenter;
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap contributors'
@@ -139,6 +143,7 @@ export default function MapScreen({ visible = true, onClose, initialFilter = "al
 
   const [filter, setFilter] = useState<FilterType>(initialFilter);
   const [selectedMarker, setSelectedMarker] = useState<MapMarker | null>(null);
+  const webViewRef = useRef<WebView>(null);
   const [showDetail, setShowDetail] = useState(false);
   const [savedSpots, setSavedSpots] = useState<string[]>([]);
   const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
@@ -449,6 +454,8 @@ export default function MapScreen({ visible = true, onClose, initialFilter = "al
       longitudeDelta: 0.5,
     };
     setRegion(nextRegion);
+    const js = `if (window.setCenter) { window.setCenter(${latitude}, ${longitude}, 10); } true;`;
+    webViewRef.current?.injectJavaScript(js);
     setSearchQuery(result.display_name);
     setShowSearchResults(false);
   }, []);
@@ -713,6 +720,7 @@ export default function MapScreen({ visible = true, onClose, initialFilter = "al
   const mapContent = (
     <View style={[styles.container, { backgroundColor: theme.backgroundRoot }]}>
             <WebView
+        ref={webViewRef}
         key={webMapKey}
         style={styles.map}
         originWhitelist={["*"]}
@@ -1109,6 +1117,10 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.md,
   },
 });
+
+
+
+
 
 
 

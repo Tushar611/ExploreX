@@ -94,6 +94,7 @@ export default function LocationPickerModal({
   const [mapRegion, setMapRegion] = useState<Region | null>(null);
   const [isSettingPin, setIsSettingPin] = useState(false);
   const [tempPinLocation, setTempPinLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const webViewRef = useRef<WebView>(null);
 
   useEffect(() => {
     if (visible && initialLocation) {
@@ -218,6 +219,8 @@ export default function LocationPickerModal({
     };
     setSelectedLocation(location);
     setSearchQuery(result.name);
+    const js = `if (window.setCenter) { window.setCenter(${result.latitude}, ${result.longitude}, 12); } true;`;
+    webViewRef.current?.injectJavaScript(js);
     setShowSearchResults(false);
     Keyboard.dismiss();
   }, []);
@@ -467,6 +470,7 @@ export default function LocationPickerModal({
           {Platform.OS !== "web" ? (
             <View style={styles.mapContainer}>
                                           <WebView
+                ref={webViewRef}
                 key={`${pickerCenter.latitude.toFixed(4)}-${pickerCenter.longitude.toFixed(4)}`} 
                 style={styles.map}
                 originWhitelist={["*"]}
@@ -764,6 +768,10 @@ const styles = StyleSheet.create({
     width: "100%",
   },
 });
+
+
+
+
 
 
 
