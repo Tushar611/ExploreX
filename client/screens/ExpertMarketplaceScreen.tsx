@@ -91,7 +91,15 @@ const FALLBACK_EXPERTS: Expert[] = [
   },
 ];
 
-const DURATION_OPTIONS = [30, 60, 90, 120];\nconst ALLOWED_HOURLY_RATES = [50, 75, 100];\nconst normalizeHourlyRate = (rate: number) => {\n  if (!Number.isFinite(rate)) return ALLOWED_HOURLY_RATES[0];\n  return ALLOWED_HOURLY_RATES.reduce((prev, curr) =>\n    Math.abs(curr - rate) < Math.abs(prev - rate) ? curr : prev\n  , ALLOWED_HOURLY_RATES[0]);\n};
+const DURATION_OPTIONS = [30, 60, 90, 120];
+const ALLOWED_HOURLY_RATES = [50, 75, 100];
+const normalizeHourlyRate = (rate: number) => {
+  if (!Number.isFinite(rate)) return ALLOWED_HOURLY_RATES[0];
+  return ALLOWED_HOURLY_RATES.reduce(
+    (prev, curr) => (Math.abs(curr - rate) < Math.abs(prev - rate) ? curr : prev),
+    ALLOWED_HOURLY_RATES[0]
+  );
+};
 
 function getBadgeColor(badge: string) {
   if (badge === "pro_expert") return "#F59E0B";
@@ -114,7 +122,8 @@ function ExpertCard({
 }) {
   const { theme } = useTheme();
   const badgeColor = getBadgeColor(expert.expert_badge);
-  const avatar = expert.photos?.[0] || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200";\n  const hourlyRate = normalizeHourlyRate(expert.hourly_rate);
+  const avatar = expert.photos?.[0] || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200";
+  const hourlyRate = normalizeHourlyRate(expert.hourly_rate);
 
   return (
     <View style={[styles.expertCard, { backgroundColor: theme.cardBackground }]}>
@@ -208,7 +217,8 @@ function BookingModal({
 
   if (!expert) return null;
 
-  const totalAmount = (expert.hourly_rate / 60) * selectedDuration;
+  const hourlyRate = normalizeHourlyRate(expert.hourly_rate);
+  const totalAmount = (hourlyRate / 60) * selectedDuration;
   const platformFee = totalAmount * 0.3;
   const expertPayout = totalAmount - platformFee;
 
@@ -1041,4 +1051,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 });
+
+
+
+
+
+
+
 

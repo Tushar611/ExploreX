@@ -10,6 +10,7 @@ import React, {
 } from "react";
 import { PurchasesOffering, CustomerInfo } from "react-native-purchases";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useAuth } from "@/context/AuthContext";
 import {
   configureRevenueCat,
   getSubscriptions,
@@ -134,6 +135,7 @@ function getTierFromCustomerInfo(info: CustomerInfo): SubscriptionTier {
 }
 
 export function SubscriptionProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
   const [tier, setTier] = useState<SubscriptionTier>("starter");
   const [isLoading, setIsLoading] = useState(true);
   const [offerings, setOfferings] = useState<PurchasesOffering | null>(null);
@@ -141,6 +143,7 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
   const [userEntitlements, setUserEntitlements] = useState<string[]>([]);
   const [configured, setConfigured] = useState(false);
   const listenerCleanup = useRef<(() => void) | null>(null);
+  const userIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     initializePurchases();
@@ -160,6 +163,25 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(TIER_STORAGE_KEY, nextTier).catch(() => {});
     AsyncStorage.setItem(ENTITLEMENTS_STORAGE_KEY, JSON.stringify(entitlements)).catch(() => {});
   }, []);
+  useEffect(() => {
+    if (!configured) return;
+    const nextId = user?.id || null;
+    if (nextId && userIdRef.current !== nextId) {
+      identifyUser(nextId)
+        .then((info) => {
+          if (info) {
+            handleCustomerInfoUpdate(info);
+          }
+          refreshSubscriptionStatus();
+        })
+        .catch(() => {});
+      userIdRef.current = nextId;
+    }
+    if (!nextId) {
+      userIdRef.current = null;
+    }
+  }, [user?.id, configured, refreshSubscriptionStatus, handleCustomerInfoUpdate]);
+
 
   const initializePurchases = async () => {
     try {
@@ -175,10 +197,17 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
         } catch {}
       }
 
-      const success = await configureRevenueCat();
+      const success = await configureRevenueCat(user?.id);
       setConfigured(success);
 
       if (success) {
+        if (user?.id) {
+          const info = await identifyUser(user.id);
+          if (info) {
+            handleCustomerInfoUpdate(info);
+          }
+          userIdRef.current = user.id;
+        }
         const result = await checkUserEntitlements();
         if (result.customerInfo) {
           handleCustomerInfoUpdate(result.customerInfo);
@@ -352,6 +381,16 @@ export function useSubscription() {
   }
   return context;
 }
+
+
+
+
+
+
+
+
+
+
 
 
 
