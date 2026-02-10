@@ -42,7 +42,7 @@ export default function RootLayout() {
       if (!appReady) setAppReady(true);
     }, 3000);
     return () => clearTimeout(fallbackTimer);
-  }, []);
+  }, [appReady]);
 
   if (!appReady) {
     return (
@@ -89,3 +89,5 @@ const styles = StyleSheet.create({
     backgroundColor: "#1a1a2e",
   },
 });
+
+
