@@ -14,7 +14,7 @@ import {
 import { Image } from "expo-image";
 import * as Location from "expo-location";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { MapView, Marker, Callout, mapsAvailable, Region } from "@/lib/maps";
+import { MapView, Marker, Callout, mapsAvailable, Region, PROVIDER_GOOGLE } from "@/lib/maps";
 import { Icon } from "@/components/Icon";
 import * as Haptics from "expo-haptics";
 import Animated, { FadeIn, FadeOut, SlideInDown } from "react-native-reanimated";
@@ -648,10 +648,10 @@ export default function MapScreen({ visible = true, onClose, initialFilter = "al
       <MapView
         ref={mapRef}
         style={styles.map}
-        provider={undefined}
+        provider={Platform.OS === "android" ? PROVIDER_GOOGLE : undefined}
         initialRegion={region}
         onRegionChangeComplete={setRegion}
-        showsUserLocation
+        showsUserLocation={locationPermission === true}
         showsMyLocationButton={false}
         mapType="standard"
       >
@@ -1061,5 +1061,6 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.md,
   },
 });
+
 
 
