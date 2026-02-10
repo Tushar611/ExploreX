@@ -371,8 +371,8 @@ export default function MapScreen({ visible = true, onClose, initialFilter = "al
   }, [allMarkers]);
 
   const webMapKey = useMemo(() => {
-    return ${osmCenter.latitude.toFixed(4)}--;
-  }, [osmCenter, osmMarkers.length]);
+    return `${osmCenter.latitude.toFixed(4)}-${osmCenter.longitude.toFixed(4)}-${osmMarkers.length}-${mapRefreshTick}`;
+  }, [osmCenter, osmMarkers.length, mapRefreshTick]);
 
   const handleWebMapMessage = useCallback((event: any) => {
     try {
@@ -384,7 +384,6 @@ export default function MapScreen({ visible = true, onClose, initialFilter = "al
       // ignore
     }
   }, [markerById]);
-
   const handleMarkerPress = (marker: MapMarker) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSelectedMarker(marker);
@@ -1110,6 +1109,18 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.md,
   },
 });
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
