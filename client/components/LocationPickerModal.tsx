@@ -276,8 +276,11 @@ export default function LocationPickerModal({
     }
   }, [selectedLocation, onSelectLocation, onClose]);
 
-  const handleRegionChange = useCallback((region: Region) => {
+    const handleRegionChange = useCallback((region: Region) => {
     setMapRegion(region);
+    setTempPinLocation({ latitude: region.latitude, longitude: region.longitude });
+  }, []);
+
   const handleWebMapMessage = useCallback((event: any) => {
     try {
       const msg = JSON.parse(event.nativeEvent.data);
@@ -288,8 +291,6 @@ export default function LocationPickerModal({
     } catch {
       // ignore
     }
-  }, []);
-    setTempPinLocation({ latitude: region.latitude, longitude: region.longitude });
   }, []);
 
   const handleConfirmPin = useCallback(async () => {
@@ -763,6 +764,8 @@ const styles = StyleSheet.create({
     width: "100%",
   },
 });
+
+
 
 
 
