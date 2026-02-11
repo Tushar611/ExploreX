@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import React, { createContext, useContext, useState, useEffect, ReactNode, useRef } from "react";
 import Constants from "expo-constants";
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -30,6 +30,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const loadRequestRef = useRef(0);
 
   const getHostFromUri = (uri?: string): string | null => {
     if (!uri) return null;
@@ -110,6 +111,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const loadProfile = async (userId: string, fallbackUser?: SupabaseUser): Promise<User | null> => {
+    const requestId = ++loadRequestRef.current;
     try {
       const stored = await AsyncStorage.getItem(`${PROFILE_KEY}_${userId}`);
       let profile: User;
@@ -122,30 +124,46 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return null;
       }
 
-      try {
-        const { getApiUrl } = await import("@/lib/query-client");
-        const baseUrl = getApiUrl();
-        const url = new URL(`/api/verification/status/${userId}`, baseUrl);
-        const response = await fetch(url.toString());
-        if (response.ok) {
-          const data = await response.json();
-          profile.isTravelVerified = data.isVerified || false;
-          profile.travelBadge = data.badge || undefined;
-        }
-      } catch {}
+      // Unblock UI immediately with cached/default profile.
+      if (requestId === loadRequestRef.current) {
+        setUser(profile);
+        setIsLoading(false);
+      }
+      saveProfile(profile).catch(() => {});
 
-      setUser(profile);
-      await saveProfile(profile);
+      // Refresh verification status in background.
+      (async () => {
+        try {
+          const { getApiUrl } = await import("@/lib/query-client");
+          const baseUrl = getApiUrl();
+          const url = new URL(`/api/verification/status/${userId}`, baseUrl);
+          const response = await fetchWithTimeout(url.toString(), { method: "GET" }, 5000);
+          if (!response.ok) return;
+
+          const data = await response.json();
+          if (requestId !== loadRequestRef.current) return;
+
+          const nextProfile: User = {
+            ...profile,
+            isTravelVerified: data.isVerified || false,
+            travelBadge: data.badge || undefined,
+          };
+          setUser(nextProfile);
+          saveProfile(nextProfile).catch(() => {});
+        } catch {}
+      })();
+
       return profile;
     } catch (error) {
       console.error("Failed to load profile:", error);
     } finally {
-      setIsLoading(false);
+      if (requestId === loadRequestRef.current) {
+        setIsLoading(false);
+      }
     }
 
     return null;
   };
-
   const saveProfile = async (profile: User) => {
     try {
       await AsyncStorage.setItem(`${PROFILE_KEY}_${profile.id}`, JSON.stringify(profile));
@@ -424,3 +442,4 @@ export function useAuth() {
   }
   return context;
 }
+

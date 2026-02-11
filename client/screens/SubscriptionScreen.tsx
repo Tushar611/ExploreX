@@ -52,7 +52,7 @@ const TIERS: TierConfig[] = [
     glowColor: '#FF8C42',
     popular: true,
     tagline: 'For serious nomads',
-    packageId: '$rc_monthly',
+    packageId: 'explorer_monthly',
   },
   {
     id: 'adventurer',
@@ -70,7 +70,7 @@ const TIERS: TierConfig[] = [
     gradient: ['#F59E0B', '#D97706', '#B45309'],
     glowColor: '#F59E0B',
     tagline: 'Unlimited forever',
-    packageId: '$rc_lifetime',
+    packageId: 'lifetime',
   },
 ];
 
@@ -616,3 +616,4 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
 });
+

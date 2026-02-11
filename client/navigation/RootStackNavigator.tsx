@@ -67,31 +67,40 @@ export default function RootStackNavigator() {
   const [currentRoute, setCurrentRoute] = useState<string>("Main");
   const [showSplash, setShowSplash] = useState(true);
   const [isVerified, setIsVerified] = useState<boolean | null>(null);
-  const [checkingVerification, setCheckingVerification] = useState(false);
 
   useEffect(() => {
     if (isAuthenticated && user?.id) {
-      checkVerificationStatus();
+      if (typeof user.isTravelVerified === "boolean") {
+        setIsVerified(user.isTravelVerified);
+      }
+      // Only re-check server state when local cache says not verified.
+      if (user.isTravelVerified !== true) {
+        checkVerificationStatus();
+      }
     } else {
       setIsVerified(null);
     }
-  }, [isAuthenticated, user?.id]);
+  }, [isAuthenticated, user?.id, user?.isTravelVerified, checkVerificationStatus]);
 
-  const checkVerificationStatus = async () => {
+  const checkVerificationStatus = useCallback(async () => {
     if (!user?.id) return;
-    setCheckingVerification(true);
     try {
       const baseUrl = getApiUrl();
       const url = new URL(`/api/verification/status/${user.id}`, baseUrl);
-      const response = await fetch(url.toString());
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      const response = await fetch(url.toString(), { signal: controller.signal });
+      clearTimeout(timeout);
+
+      if (!response.ok) return;
       const data = await response.json();
-      setIsVerified(data.isVerified || false);
+      setIsVerified(Boolean(data.isVerified));
     } catch {
-      setIsVerified(false);
-    } finally {
-      setCheckingVerification(false);
+      // Keep cached value on transient network failures.
+      setIsVerified((prev) => prev);
     }
-  };
+  }, [user?.id]);
 
   const handleVerified = async (badge?: string) => {
     setIsVerified(true);
@@ -119,7 +128,7 @@ export default function RootStackNavigator() {
     );
   }
 
-  if (isLoading || (isAuthenticated && checkingVerification)) {
+  if (isLoading) {
     return (
       <View style={[styles.loading, { backgroundColor: theme.backgroundRoot }]}>
         <ActivityIndicator size="large" color={AppColors.primary} />
@@ -269,3 +278,4 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
 });
+

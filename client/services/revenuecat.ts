@@ -26,6 +26,20 @@ function getApiKey(): string | undefined {
   }) || undefined;
 }
 
+const includesAny = (values: string[], keywords: string[]) => {
+  const normalizedValues = values.map((value) => value.toLowerCase());
+  return keywords.some((keyword) =>
+    normalizedValues.some((value) => value.includes(keyword.toLowerCase())),
+  );
+};
+
+const expertRateFromIdentifier = (value: string): number | null => {
+  const match = value.toLowerCase().match(/expert[_-]?(\d+(?:\.\d+)?)/);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
 export async function configureRevenueCat(userId?: string): Promise<boolean> {
   if (isConfigured) return true;
 
@@ -116,19 +130,22 @@ export async function checkUserEntitlements(): Promise<{
   try {
     const info = await Purchases.getCustomerInfo();
     const activeEntitlements = Object.keys(info.entitlements.active);
-
-    const hasExplorer =
-      info.entitlements.active[ENTITLEMENT_EXPLORER]?.isActive === true ||
-      activeEntitlements.includes("pro") ||
-      activeEntitlements.includes("Nomad Connect Pro");
-
-    const hasAdventurer =
-      info.entitlements.active[ENTITLEMENT_ADVENTURER]?.isActive === true ||
-      activeEntitlements.includes("expert");
+    const purchasedProducts = info.activeSubscriptions || [];
 
     const hasLifetime =
       info.entitlements.active[ENTITLEMENT_LIFETIME]?.isActive === true ||
-      activeEntitlements.includes("lifetime");
+      includesAny(activeEntitlements, ["lifetime", "forever"]) ||
+      includesAny(purchasedProducts, ["lifetime", "forever"]);
+
+    const hasAdventurer =
+      info.entitlements.active[ENTITLEMENT_ADVENTURER]?.isActive === true ||
+      includesAny(activeEntitlements, ["adventurer", "expert", "premium"]) ||
+      includesAny(purchasedProducts, ["adventurer", "expert", "premium"]);
+
+    const hasExplorer =
+      info.entitlements.active[ENTITLEMENT_EXPLORER]?.isActive === true ||
+      includesAny(activeEntitlements, ["explorer", "pro", "nomad connect pro"]) ||
+      includesAny(purchasedProducts, ["explorer", "pro"]);
 
     const isPro = hasExplorer || hasAdventurer || hasLifetime;
     const isPremium = hasAdventurer || hasLifetime;
@@ -197,9 +214,45 @@ export async function purchaseConsultation(expertName: string, amount: number, r
       return { success: true, transactionId: mockTxId };
     }
 
-    const pkg = consultationOffering.availablePackages.find(
-      (p) => p.identifier.includes("consultation") || p.identifier.includes("expert")
-    ) || consultationOffering.availablePackages[0];
+    const targetRate = Number.isFinite(rateTier as number) ? Number(rateTier) : NaN;
+    const candidatePackages = consultationOffering.availablePackages.filter((p) => {
+      const id = p.identifier.toLowerCase();
+      const productId = p.product.identifier.toLowerCase();
+      return id.includes("expert") || id.includes("consult") || productId.includes("expert") || productId.includes("consult");
+    });
+
+    const pool = candidatePackages.length > 0 ? candidatePackages : consultationOffering.availablePackages;
+
+    let pkg: PurchasesPackage | undefined;
+
+    if (Number.isFinite(targetRate)) {
+      let nearestDiff = Number.POSITIVE_INFINITY;
+      for (const candidate of pool) {
+        const fromProduct = expertRateFromIdentifier(candidate.product.identifier);
+        const fromPackage = expertRateFromIdentifier(candidate.identifier);
+        const candidateRate = fromProduct ?? fromPackage;
+        if (!Number.isFinite(candidateRate as number)) continue;
+
+        const diff = Math.abs((candidateRate as number) - targetRate);
+        if (diff < nearestDiff) {
+          nearestDiff = diff;
+          pkg = candidate;
+        }
+      }
+    }
+
+    if (!pkg) {
+      const expertSlug = expertName.toLowerCase().replace(/[^a-z0-9]+/g, "");
+      pkg = pool.find((candidate) => {
+        const id = candidate.identifier.toLowerCase().replace(/[^a-z0-9]+/g, "");
+        const productId = candidate.product.identifier.toLowerCase().replace(/[^a-z0-9]+/g, "");
+        return id.includes(expertSlug) || productId.includes(expertSlug);
+      });
+    }
+
+    if (!pkg) {
+      pkg = pool[0];
+    }
 
     if (!pkg) {
       console.log("No consultation package found, using demo purchase");
@@ -223,4 +276,3 @@ export async function purchaseConsultation(expertName: string, amount: number, r
 }
 
 export { isConfigured as isRevenueCatConfigured, ENTITLEMENT_EXPLORER, ENTITLEMENT_ADVENTURER, ENTITLEMENT_LIFETIME };
-
