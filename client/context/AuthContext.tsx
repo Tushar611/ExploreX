@@ -71,6 +71,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const upsertProfileToServer = async (profile: User) => {
+    try {
+      const { getApiUrl } = await import("@/lib/query-client");
+      const baseUrl = getApiUrl();
+      const url = new URL("/api/user-profiles/upsert", baseUrl);
+
+      await fetchWithTimeout(
+        url.toString(),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: profile.id,
+            name: profile.name,
+            age: profile.age,
+            bio: profile.bio,
+            interests: profile.interests,
+            photos: profile.photos,
+            location: profile.location,
+          }),
+        },
+        8000
+      );
+    } catch (error) {
+      console.error("Profile sync error:", error);
+    }
+  };
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
@@ -130,6 +158,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setIsLoading(false);
       }
       saveProfile(profile).catch(() => {});
+      upsertProfileToServer(profile).catch(() => {});
 
       // Refresh verification status in background.
       (async () => {
@@ -234,6 +263,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         setUser(newUser);
         await saveProfile(newUser);
+        await upsertProfileToServer(newUser);
         try {
           const { identifyUser } = await import("@/services/revenuecat");
           await identifyUser(data.user.id);
@@ -314,6 +344,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const updatedUser = { ...user, ...updates };
       setUser(updatedUser);
       await saveProfile(updatedUser);
+      await upsertProfileToServer(updatedUser);
     } catch (error) {
       console.error("Update profile error:", error);
     }

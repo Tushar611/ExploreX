@@ -2373,8 +2373,6 @@ Badge assignment:
         .from('user_profiles')
         .select('*')
         .neq('id', userId)
-        .not('name', 'is', null)
-        .neq('name', '')
         .order('id');
 
       if (error) throw error;

@@ -1714,7 +1714,7 @@ Badge assignment:
         ...(matchesB || []).map((m) => m.user_a_id)
       ];
       const excludeIds = /* @__PURE__ */ new Set([userId, ...swipedIds, ...matchedIds]);
-      const { data: allProfiles, error } = await sb.from("user_profiles").select("*").neq("id", userId).not("name", "is", null).neq("name", "").order("id");
+      const { data: allProfiles, error } = await sb.from("user_profiles").select("*").neq("id", userId).order("id");
       if (error) throw error;
       let filtered = (allProfiles || []).filter((p) => !excludeIds.has(p.id));
       const realProfiles = filtered.filter((p) => !p.id.startsWith("mock_"));
