@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import React, { createContext, useContext, useState, useEffect, ReactNode, useRef } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { User, Match, Message, Activity, ForumPost, SwipeCard, ChatMessageType } from "@/types";
 import { getApiUrl } from "@/lib/query-client";
@@ -394,6 +394,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const [forumPosts, setForumPosts] = useState<ForumPost[]>([]);
   const [likedIds, setLikedIds] = useState<Set<string>>(new Set());
   const [isLoading, setIsLoading] = useState(true);
+  const loadRequestRef = useRef(0);
 
   useEffect(() => {
     loadData();
@@ -437,14 +438,85 @@ export function DataProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const mapApiMessageToClient = (row: any): Message => ({
+    id: row.id,
+    matchId: row.match_id || row.matchId,
+    senderId: row.sender_id || row.senderId,
+    content: row.content || "",
+    type: row.type || "text",
+    photoUrl: row.photo_url || row.photoUrl || undefined,
+    fileUrl: row.file_url || row.fileUrl || undefined,
+    fileName: row.file_name || row.fileName || undefined,
+    audioUrl: row.audio_url || row.audioUrl || undefined,
+    audioDuration: row.audio_duration || row.audioDuration || undefined,
+    replyTo: row.reply_to || row.replyTo || undefined,
+    reactions: row.reactions || undefined,
+    location: row.location || undefined,
+    createdAt: row.created_at || row.createdAt || new Date().toISOString(),
+    status: row.status || "sent",
+    editedAt: row.edited_at || row.editedAt || undefined,
+  });
+
+  const mergeMessagesById = (localMessages: Message[], serverMessages: Message[]): Message[] => {
+    const byId = new Map<string, Message>();
+
+    for (const message of localMessages) {
+      byId.set(message.id, message);
+    }
+
+    for (const message of serverMessages) {
+      byId.set(message.id, message);
+    }
+
+    return Array.from(byId.values()).sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+  };
+
+  const getLatestMessage = (matchMessages: Message[] | undefined): Message | undefined => {
+    if (!matchMessages || matchMessages.length === 0) return undefined;
+    return [...matchMessages].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    )[0];
+  };
+
+  const hydrateMatchesWithLastMessage = (
+    inputMatches: Match[],
+    sourceMessages: Record<string, Message[]>
+  ): Match[] => {
+    return inputMatches.map((match) => {
+      const latest = getLatestMessage(sourceMessages[match.id]);
+      return latest ? { ...match, lastMessage: latest } : match;
+    });
+  };
+  const fetchJsonWithTimeout = async <T,>(url: URL, fallback: T, timeoutMs = 6000): Promise<T> => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(url.toString(), { signal: controller.signal });
+      if (!response.ok) return fallback;
+      return (await response.json()) as T;
+    } catch {
+      return fallback;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
+
   const loadData = async () => {
+    const requestId = ++loadRequestRef.current;
     setIsLoading(true);
+
     try {
       if (!user) {
         const serverActivities = await fetchActivitiesFromAPI();
         const loadedActivities: Activity[] = serverActivities || [];
         const now = new Date();
         const activeActivities = loadedActivities.filter((a: Activity) => new Date(a.date) > now);
+
+        if (requestId !== loadRequestRef.current) return;
+
         setProfiles([]);
         setMatches([]);
         setMessages({});
@@ -455,55 +527,88 @@ export function DataProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      const userId = user.id;
       const baseUrl = getApiUrl();
 
-      const [messagesStr, forumStr, localMatchesStr, discoverRes, matchesRes, likedRes, loadedActivities] =
-        await Promise.all([
-          AsyncStorage.getItem(`${MESSAGES_KEY}_${user?.id}`),
-          AsyncStorage.getItem(FORUM_KEY),
-          AsyncStorage.getItem(`${MATCHES_KEY}_${user?.id}`),
-          fetch(new URL(`/api/discover/profiles/${user.id}`, baseUrl).toString()).then(r => r.ok ? r.json() : []).catch(() => []),
-          fetch(new URL(`/api/matches/${user.id}`, baseUrl).toString()).then(r => r.ok ? r.json() : []).catch(() => []),
-          fetch(new URL(`/api/swipes/liked/${user.id}`, baseUrl).toString()).then(r => r.ok ? r.json() : []).catch(() => []),
-          fetchActivitiesFromAPI(),
-        ]);
+      const [messagesStr, forumStr, localMatchesStr] = await Promise.all([
+        AsyncStorage.getItem(`${MESSAGES_KEY}_${userId}`),
+        AsyncStorage.getItem(FORUM_KEY),
+        AsyncStorage.getItem(`${MATCHES_KEY}_${userId}`),
+      ]);
 
-      const loadedMessages: Record<string, Message[]> = messagesStr
-        ? JSON.parse(messagesStr)
-        : {};
-      
-      
-      const loadedForum: ForumPost[] = forumStr
-        ? JSON.parse(forumStr)
-        : MOCK_FORUM_POSTS;
-
-      const serverProfiles: SwipeCard[] = discoverRes || [];
-      const serverMatches: Match[] = matchesRes || [];
-      const serverLiked: User[] = likedRes || [];
-
-      
+      const loadedMessages: Record<string, Message[]> = messagesStr ? JSON.parse(messagesStr) : {};
+      const loadedForum: ForumPost[] = forumStr ? JSON.parse(forumStr) : MOCK_FORUM_POSTS;
       const localMatches: Match[] = localMatchesStr ? JSON.parse(localMatchesStr) : [];
-      const serverMatchIds = new Set(serverMatches.map(m => m.id));
+
+      if (requestId !== loadRequestRef.current) return;
+
+      // Show cached data immediately to avoid cold-start spinner on mobile.
+      const hydratedLocalMatches = hydrateMatchesWithLastMessage(localMatches, loadedMessages);
+      setMessages(loadedMessages);
+      setMatches(hydratedLocalMatches);
+      setForumPosts(loadedForum);
+      setIsLoading(false);
+
+      const [discoverRes, matchesRes, likedRes, loadedActivities] = await Promise.all([
+        fetchJsonWithTimeout<SwipeCard[]>(new URL(`/api/discover/profiles/${userId}`, baseUrl), [], 7000),
+        fetchJsonWithTimeout<Match[]>(new URL(`/api/matches/${userId}`, baseUrl), [], 7000),
+        fetchJsonWithTimeout<User[]>(new URL(`/api/swipes/liked/${userId}`, baseUrl), [], 7000),
+        fetchActivitiesFromAPI(),
+      ]);
+
+      if (requestId !== loadRequestRef.current) return;
+
+      const serverMatchIds = new Set(matchesRes.map((m) => m.id));
       const mergedMatches = [
-        ...serverMatches.map(sm => {
-          const local = localMatches.find(lm => lm.id === sm.id);
-          return local ? { ...sm, lastMessage: local.lastMessage, isFavourite: local.isFavourite, unreadCount: local.unreadCount } : sm;
+        ...matchesRes.map((serverMatch) => {
+          const local = hydratedLocalMatches.find((localMatch) => localMatch.id === serverMatch.id);
+          return local
+            ? {
+                ...serverMatch,
+                lastMessage: local.lastMessage,
+                isFavourite: local.isFavourite,
+                unreadCount: local.unreadCount,
+              }
+            : serverMatch;
         }),
-        ...localMatches.filter(lm => !serverMatchIds.has(lm.id)),
+        ...localMatches.filter((localMatch) => !serverMatchIds.has(localMatch.id)),
       ];
 
-      setMatches(mergedMatches);
-      setMessages(loadedMessages);
+      setProfiles(discoverRes);
       setActivities(loadedActivities || []);
-      setForumPosts(loadedForum);
-      setProfiles(serverProfiles);
-      setLikedIds(new Set(serverLiked.map(u => u.id)));
+      setLikedIds(new Set(likedRes.map((u) => u.id)));
 
-      await AsyncStorage.setItem(`${MATCHES_KEY}_${user.id}`, JSON.stringify(mergedMatches));
+      const messageEntries = await Promise.all(
+        mergedMatches.map(async (match) => {
+          const serverRows = await fetchJsonWithTimeout<any[]>(
+            new URL(`/api/messages/${match.id}`, baseUrl),
+            [],
+            4000
+          );
+          const serverMessages: Message[] = (serverRows || []).map(mapApiMessageToClient);
+          const localForMatch = loadedMessages[match.id] || [];
+          return [match.id, mergeMessagesById(localForMatch, serverMessages)] as const;
+        })
+      );
+
+      if (requestId !== loadRequestRef.current) return;
+
+      const syncedMessages: Record<string, Message[]> = { ...loadedMessages };
+      for (const [matchId, msgs] of messageEntries) {
+        syncedMessages[matchId] = msgs;
+      }
+
+      const finalMatches = hydrateMatchesWithLastMessage(mergedMatches, syncedMessages);
+      setMatches(finalMatches);
+      setMessages(syncedMessages);
+
+      AsyncStorage.setItem(`${MATCHES_KEY}_${userId}`, JSON.stringify(finalMatches)).catch(() => {});
+      AsyncStorage.setItem(`${MESSAGES_KEY}_${userId}`, JSON.stringify(syncedMessages)).catch(() => {});
     } catch (error) {
       console.error("Failed to load data:", error);
-    } finally {
-      setIsLoading(false);
+      if (requestId === loadRequestRef.current) {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -597,7 +702,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
   ): Promise<Message> => {
     if (!user) throw new Error("Not authenticated");
 
-    const newMessage: Message = {
+    const optimisticMessage: Message = {
       id: `msg_${Date.now()}`,
       matchId,
       senderId: user.id,
@@ -614,18 +719,47 @@ export function DataProvider({ children }: { children: ReactNode }) {
       status: "sent",
     };
 
+    let messageToStore = optimisticMessage;
+
+    try {
+      const baseUrl = getApiUrl();
+      const response = await fetch(new URL(`/api/messages/${matchId}`, baseUrl).toString(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          senderId: user.id,
+          content,
+          type: type || "text",
+          photoUrl,
+          fileUrl,
+          fileName,
+          audioUrl: type === "audio" ? fileUrl : undefined,
+          audioDuration: type === "audio" ? audioDuration : undefined,
+          replyTo,
+          location,
+        }),
+      });
+
+      if (response.ok) {
+        const created = await response.json();
+        messageToStore = mapApiMessageToClient(created);
+      }
+    } catch (error) {
+      console.error("Send message API error:", error);
+    }
+
     setTimeout(() => {
-      updateMessageStatus(matchId, newMessage.id, "delivered");
+      updateMessageStatus(matchId, messageToStore.id, "delivered");
     }, 1000);
 
     setTimeout(() => {
-      updateMessageStatus(matchId, newMessage.id, "read");
+      updateMessageStatus(matchId, messageToStore.id, "read");
     }, 3000);
 
     const matchMessages = messages[matchId] || [];
     const updatedMessages = {
       ...messages,
-      [matchId]: [...matchMessages, newMessage],
+      [matchId]: mergeMessagesById(matchMessages, [messageToStore]),
     };
 
     setMessages(updatedMessages);
@@ -635,7 +769,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     );
 
     const updatedMatches = matches.map((m) =>
-      m.id === matchId ? { ...m, lastMessage: newMessage } : m
+      m.id === matchId ? { ...m, lastMessage: messageToStore } : m
     );
     setMatches(updatedMatches);
     await AsyncStorage.setItem(
@@ -643,7 +777,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       JSON.stringify(updatedMatches)
     );
 
-    return newMessage;
+    return messageToStore;
   };
 
   const createActivity = async (
@@ -827,21 +961,37 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const editMessage = async (matchId: string, messageId: string, newContent: string): Promise<void> => {
     if (!user) return;
-    
+
+    let editedAt = new Date().toISOString();
+    try {
+      const baseUrl = getApiUrl();
+      const response = await fetch(new URL(`/api/messages/${messageId}`, baseUrl).toString(), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: newContent }),
+      });
+      if (response.ok) {
+        const updated = await response.json();
+        editedAt = updated.edited_at || updated.editedAt || editedAt;
+      }
+    } catch (error) {
+      console.error("Edit message API error:", error);
+    }
+
     const matchMessages = messages[matchId] || [];
-    const updatedMatchMessages = matchMessages.map(m => 
-      m.id === messageId ? { ...m, content: newContent, editedAt: new Date().toISOString() } : m
+    const updatedMatchMessages = matchMessages.map((m) =>
+      m.id === messageId ? { ...m, content: newContent, editedAt } : m
     );
     const updatedMessages = { ...messages, [matchId]: updatedMatchMessages };
-    
+
     setMessages(updatedMessages);
     await AsyncStorage.setItem(`${MESSAGES_KEY}_${user.id}`, JSON.stringify(updatedMessages));
-    
-    const editedMessage = updatedMatchMessages.find(m => m.id === messageId);
+
+    const editedMessage = updatedMatchMessages.find((m) => m.id === messageId);
     if (editedMessage) {
       const lastMessage = updatedMatchMessages[updatedMatchMessages.length - 1];
       if (lastMessage?.id === messageId) {
-        const updatedMatches = matches.map(m => 
+        const updatedMatches = matches.map((m) =>
           m.id === matchId ? { ...m, lastMessage: editedMessage } : m
         );
         setMatches(updatedMatches);
@@ -852,16 +1002,25 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const deleteMessage = async (matchId: string, messageId: string): Promise<void> => {
     if (!user) return;
-    
+
+    try {
+      const baseUrl = getApiUrl();
+      await fetch(new URL(`/api/messages/${messageId}`, baseUrl).toString(), {
+        method: "DELETE",
+      });
+    } catch (error) {
+      console.error("Delete message API error:", error);
+    }
+
     const matchMessages = messages[matchId] || [];
-    const updatedMatchMessages = matchMessages.filter(m => m.id !== messageId);
+    const updatedMatchMessages = matchMessages.filter((m) => m.id !== messageId);
     const updatedMessages = { ...messages, [matchId]: updatedMatchMessages };
-    
+
     setMessages(updatedMessages);
     await AsyncStorage.setItem(`${MESSAGES_KEY}_${user.id}`, JSON.stringify(updatedMessages));
-    
+
     const lastMessage = updatedMatchMessages[updatedMatchMessages.length - 1];
-    const updatedMatches = matches.map(m => 
+    const updatedMatches = matches.map((m) =>
       m.id === matchId ? { ...m, lastMessage: lastMessage || undefined } : m
     );
     setMatches(updatedMatches);
@@ -871,9 +1030,34 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const toggleMessageReaction = async (matchId: string, messageId: string, emoji: string): Promise<void> => {
     if (!user) return;
 
-    setMessages(prev => {
+    try {
+      const baseUrl = getApiUrl();
+      const response = await fetch(new URL(`/api/messages/${messageId}/reactions`, baseUrl).toString(), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: user.id, emoji }),
+      });
+
+      if (response.ok) {
+        const updated = await response.json();
+        setMessages((prev) => {
+          const matchMessages = prev[matchId] || [];
+          const updatedMatchMessages = matchMessages.map((m) =>
+            m.id === messageId ? { ...m, reactions: updated.reactions || {} } : m
+          );
+          const updatedMessages = { ...prev, [matchId]: updatedMatchMessages };
+          AsyncStorage.setItem(`${MESSAGES_KEY}_${user.id}`, JSON.stringify(updatedMessages));
+          return updatedMessages;
+        });
+        return;
+      }
+    } catch (error) {
+      console.error("Toggle reaction API error:", error);
+    }
+
+    setMessages((prev) => {
       const matchMessages = prev[matchId] || [];
-      const updatedMatchMessages = matchMessages.map(m => {
+      const updatedMatchMessages = matchMessages.map((m) => {
         if (m.id !== messageId) return m;
         const reactions = { ...(m.reactions || {}) };
         const users = new Set(reactions[emoji] || []);

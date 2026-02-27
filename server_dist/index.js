@@ -88,6 +88,8 @@ import express from "express";
 import { createServer } from "node:http";
 import * as path from "node:path";
 import { createClient } from "@supabase/supabase-js";
+import { Pool } from "pg";
+import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
 async function callGroqChat(messages) {
   if (!groqApiKey) {
     throw new Error("Missing GROQ_API_KEY");
@@ -156,6 +158,38 @@ async function checkSupabaseTables() {
 }
 var otpStore = /* @__PURE__ */ new Map();
 var groqApiKey = process.env.GROQ_API_KEY || "";
+var pgPool = process.env.DATABASE_URL ? new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : void 0
+}) : null;
+function hashPassword(password) {
+  const salt = randomBytes(16).toString("hex");
+  const digest = scryptSync(password, salt, 64).toString("hex");
+  return `${salt}:${digest}`;
+}
+function verifyPassword(password, storedHash) {
+  const [salt, key] = storedHash.split(":");
+  if (!salt || !key) return false;
+  const digest = scryptSync(password, salt, 64);
+  const keyBuffer = Buffer.from(key, "hex");
+  if (digest.length !== keyBuffer.length) return false;
+  return timingSafeEqual(digest, keyBuffer);
+}
+async function ensureAuthTables() {
+  if (!pgPool) {
+    console.log("[DB] DATABASE_URL missing - custom auth disabled");
+    return;
+  }
+  await pgPool.query(`
+    CREATE TABLE IF NOT EXISTS app_users (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      name TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+}
 var VAN_BUILD_SYSTEM_PROMPT = `You are an expert van conversion advisor for the Nomad Connect app. You help van lifers and nomads with:
 - Van conversion planning and design
 - Electrical systems (solar, batteries, inverters)
@@ -172,6 +206,109 @@ Be friendly, practical, and specific. When discussing costs, provide realistic p
 Keep responses concise but helpful. Use bullet points for lists. If someone asks about something dangerous, warn them appropriately.`;
 async function registerRoutes(app2) {
   checkSupabaseTables().catch((err) => console.error("[DB] Table check failed:", err));
+  ensureAuthTables().catch((err) => console.error("[DB] Auth table setup failed:", err));
+  app2.post("/api/auth/signup", async (req, res) => {
+    try {
+      if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
+      const email = String(req.body?.email || "").trim().toLowerCase();
+      const password = String(req.body?.password || "");
+      const name = String(req.body?.name || "").trim();
+      if (!email || !password || !name) {
+        return res.status(400).json({ error: "Name, email and password are required" });
+      }
+      if (password.length < 6) {
+        return res.status(400).json({ error: "Password must be at least 6 characters" });
+      }
+      const existing = await pgPool.query("SELECT id FROM app_users WHERE email = $1 LIMIT 1", [email]);
+      if (existing.rowCount) {
+        return res.status(409).json({ error: "Email already registered" });
+      }
+      const passwordHash = hashPassword(password);
+      const created = await pgPool.query(
+        `INSERT INTO app_users (email, password_hash, name)
+         VALUES ($1, $2, $3)
+         RETURNING id, email, name, created_at`,
+        [email, passwordHash, name]
+      );
+      const user = created.rows[0];
+      const profilePayload = {
+        id: user.id,
+        email: user.email,
+        name: user.name || name,
+        age: 25,
+        bio: "",
+        location: "",
+        photos: [],
+        interests: []
+      };
+      await pgPool.query(
+        `INSERT INTO user_profiles (id, email, name, age, bio, location, photos, interests, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, NOW(), NOW())
+         ON CONFLICT (id) DO UPDATE
+         SET email = EXCLUDED.email,
+             name = EXCLUDED.name,
+             age = EXCLUDED.age,
+             bio = EXCLUDED.bio,
+             location = EXCLUDED.location,
+             photos = EXCLUDED.photos,
+             interests = EXCLUDED.interests,
+             updated_at = NOW()`,
+        [
+          profilePayload.id,
+          profilePayload.email,
+          profilePayload.name,
+          profilePayload.age,
+          profilePayload.bio,
+          profilePayload.location,
+          JSON.stringify(profilePayload.photos),
+          JSON.stringify(profilePayload.interests)
+        ]
+      );
+      return res.json({
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name || name,
+          createdAt: user.created_at
+        }
+      });
+    } catch (error) {
+      console.error("Signup failed:", error);
+      return res.status(500).json({ error: "Signup failed" });
+    }
+  });
+  app2.post("/api/auth/login", async (req, res) => {
+    try {
+      if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
+      const email = String(req.body?.email || "").trim().toLowerCase();
+      const password = String(req.body?.password || "");
+      if (!email || !password) {
+        return res.status(400).json({ error: "Email and password are required" });
+      }
+      const result = await pgPool.query(
+        "SELECT id, email, name, password_hash, created_at FROM app_users WHERE email = $1 LIMIT 1",
+        [email]
+      );
+      if (!result.rowCount) {
+        return res.status(401).json({ error: "Invalid email or password" });
+      }
+      const row = result.rows[0];
+      if (!verifyPassword(password, row.password_hash)) {
+        return res.status(401).json({ error: "Invalid email or password" });
+      }
+      return res.json({
+        user: {
+          id: row.id,
+          email: row.email,
+          name: row.name || row.email.split("@")[0],
+          createdAt: row.created_at
+        }
+      });
+    } catch (error) {
+      console.error("Login failed:", error);
+      return res.status(500).json({ error: "Login failed" });
+    }
+  });
   app2.get("/api/health", (_req, res) => {
     res.json({ ok: true, service: "nomad-connect-api" });
   });
@@ -1031,24 +1168,16 @@ ${vanDetails}` }
         otpStore.delete(normalizedEmail);
         return res.status(400).json({ error: "Session expired. Please start over." });
       }
-      if (!supabaseAdmin) {
-        return res.status(500).json({ error: "Service not available" });
+      if (!pgPool) {
+        return res.status(500).json({ error: "Database is not configured" });
       }
-      const { data: userData, error: lookupError } = await supabaseAdmin.auth.admin.listUsers();
-      if (lookupError) {
-        console.error("User lookup error:", lookupError);
-        return res.status(500).json({ error: "Failed to find user" });
-      }
-      const user = userData.users.find((u) => u.email?.toLowerCase() === normalizedEmail);
-      if (!user) {
+      const nextHash = hashPassword(newPassword);
+      const result = await pgPool.query(
+        "UPDATE app_users SET password_hash = $1 WHERE email = $2 RETURNING id",
+        [nextHash, normalizedEmail]
+      );
+      if (!result.rowCount) {
         return res.status(404).json({ error: "User not found" });
-      }
-      const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(user.id, {
-        password: newPassword
-      });
-      if (updateError) {
-        console.error("Password update error:", updateError);
-        return res.status(500).json({ error: "Failed to update password" });
       }
       verifiedEntry.used = true;
       otpStore.delete(normalizedEmail);
@@ -1070,6 +1199,39 @@ ${vanDetails}` }
     try {
       const { id, name, age, bio, interests, photos, location } = req.body;
       if (!id) return res.status(400).json({ error: "User ID is required" });
+      if (pgPool) {
+        const result = await pgPool.query(
+          `INSERT INTO user_profiles (
+              id, name, age, bio, interests, photos, location,
+              compatibility_checks_this_week, radar_scans_this_week, last_reset_timestamp,
+              is_visible_on_radar, created_at, updated_at
+            ) VALUES (
+              $1, COALESCE($2, ''), COALESCE($3, 0), COALESCE($4, ''),
+              COALESCE($5::jsonb, '[]'::jsonb), COALESCE($6::jsonb, '[]'::jsonb), COALESCE($7, ''),
+              0, 0, $8, true, NOW(), NOW()
+            )
+            ON CONFLICT (id) DO UPDATE SET
+              name = COALESCE(EXCLUDED.name, user_profiles.name),
+              age = COALESCE(EXCLUDED.age, user_profiles.age),
+              bio = COALESCE(EXCLUDED.bio, user_profiles.bio),
+              interests = COALESCE(EXCLUDED.interests, user_profiles.interests),
+              photos = COALESCE(EXCLUDED.photos, user_profiles.photos),
+              location = COALESCE(EXCLUDED.location, user_profiles.location),
+              updated_at = NOW()
+            RETURNING *`,
+          [
+            id,
+            name ?? null,
+            age ?? null,
+            bio ?? null,
+            interests ? JSON.stringify(interests) : null,
+            photos ? JSON.stringify(photos) : null,
+            location ?? null,
+            Date.now()
+          ]
+        );
+        return res.json(result.rows[0]);
+      }
       const sb = getSupabase();
       const { data: existing, error: selectError } = await sb.from("user_profiles").select("id").eq("id", id);
       if (selectError) throw selectError;
@@ -1101,24 +1263,10 @@ ${vanDetails}` }
           updated_at: (/* @__PURE__ */ new Date()).toISOString()
         });
         if (insertError) throw insertError;
-        if (!id.startsWith("mock")) {
-          const { data: mockIds } = await sb.from("user_profiles").select("id").like("id", "mock%");
-          if (mockIds) {
-            for (const mock of mockIds) {
-              await sb.from("swipes").upsert({
-                id: `seed_${mock.id}_${id}`,
-                swiper_id: mock.id,
-                swiped_id: id,
-                direction: "right",
-                created_at: (/* @__PURE__ */ new Date()).toISOString()
-              }, { onConflict: "swiper_id,swiped_id" });
-            }
-          }
-        }
       }
-      const { data: result, error: getError } = await sb.from("user_profiles").select("*").eq("id", id).single();
+      const { data: row, error: getError } = await sb.from("user_profiles").select("*").eq("id", id).single();
       if (getError) throw getError;
-      res.json(result);
+      res.json(row);
     } catch (error) {
       console.error("Upsert profile error:", error);
       res.status(500).json({ error: "Failed to upsert profile" });
@@ -1126,6 +1274,16 @@ ${vanDetails}` }
   });
   app2.get("/api/user-profiles/:userId", async (req, res) => {
     try {
+      if (pgPool) {
+        const result = await pgPool.query(
+          "SELECT * FROM user_profiles WHERE id = $1 LIMIT 1",
+          [req.params.userId]
+        );
+        if (!result.rowCount) {
+          return res.status(404).json({ error: "Profile not found" });
+        }
+        return res.json(result.rows[0]);
+      }
       const sb = getSupabase();
       const { data, error } = await sb.from("user_profiles").select("*").eq("id", req.params.userId).single();
       if (error) {
@@ -1192,6 +1350,7 @@ ${vanDetails}` }
         }).eq("id", userAId);
         profile.compatibility_checks_this_week = 0;
       }
+      const currentTier = tier || "starter";
       const limit = COMPATIBILITY_LIMITS[currentTier] ?? 2;
       if (limit !== -1 && (profile.compatibility_checks_this_week || 0) >= limit) {
         return res.status(403).json({
@@ -1346,14 +1505,14 @@ Return ONLY this JSON structure:
         }).eq("id", userId);
         profile.radar_scans_this_week = 0;
       }
-      const currentTier2 = tier || "starter";
-      const limit = RADAR_LIMITS[currentTier2] ?? 2;
+      const currentTier = tier || "starter";
+      const limit = RADAR_LIMITS[currentTier] ?? 2;
       if (limit !== -1 && (profile.radar_scans_this_week || 0) >= limit) {
         return res.status(403).json({
           error: "Daily radar scan limit reached",
           limit,
           used: profile.radar_scans_this_week,
-          tier: currentTier2,
+          tier: currentTier,
           requiresUpgrade: true
         });
       }

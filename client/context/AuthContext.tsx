@@ -2,13 +2,15 @@ import React, { createContext, useContext, useState, useEffect, ReactNode, useRe
 import Constants from "expo-constants";
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { supabase } from "@/lib/supabase";
 import { User } from "@/types";
-import { Session, User as SupabaseUser } from "@supabase/supabase-js";
+
+interface LocalSession {
+  user: { id: string; email: string; name?: string };
+}
 
 interface AuthContextType {
   user: User | null;
-  session: Session | null;
+  session: LocalSession | null;
   isLoading: boolean;
   isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
@@ -25,10 +27,17 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const PROFILE_KEY = "@nomad_profile";
+const SESSION_KEY = "@nomad_local_session";
+
+type AuthUserLike = {
+  id: string;
+  email?: string;
+  name?: string;
+};
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [session, setSession] = useState<Session | null>(null);
+  const [session, setSession] = useState<LocalSession | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const loadRequestRef = useRef(0);
 
@@ -71,6 +80,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const isAbortError = (error: unknown): boolean =>
+    error instanceof Error && error.name === "AbortError";
+
   const upsertProfileToServer = async (profile: User) => {
     try {
       const { getApiUrl } = await import("@/lib/query-client");
@@ -92,43 +104,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             location: profile.location,
           }),
         },
-        8000
+        15000
       );
     } catch (error) {
+      if (isAbortError(error)) return;
       console.error("Profile sync error:", error);
     }
   };
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      if (session?.user) {
-        loadProfile(session.user.id, session.user);
-      } else {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(SESSION_KEY);
+        if (!raw) {
+          setIsLoading(false);
+          return;
+        }
+
+        const parsed = JSON.parse(raw) as LocalSession;
+        if (!parsed?.user?.id) {
+          setIsLoading(false);
+          return;
+        }
+
+        setSession(parsed);
+        await loadProfile(parsed.user.id, {
+          id: parsed.user.id,
+          email: parsed.user.email,
+          name: parsed.user.name,
+        });
+      } catch (error) {
+        console.error("Session restore error:", error);
+      } finally {
         setIsLoading(false);
       }
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      setSession(session);
-      if (session?.user) {
-        await loadProfile(session.user.id, session.user);
-      } else {
-        setUser(null);
-        setIsLoading(false);
-      }
-    });
-
-    return () => subscription.unsubscribe();
+    })();
   }, []);
 
-  const buildDefaultProfile = (authUser: SupabaseUser): User => {
+  const buildDefaultProfile = (authUser: AuthUserLike): User => {
     const email = authUser.email?.toLowerCase() || "";
-    const fallbackName = email ? email.split("@")[0] : "Nomad";
+    const fallbackName = authUser.name || (email ? email.split("@")[0] : "Nomad");
     return {
       id: authUser.id,
       email,
-      name: (authUser.user_metadata?.name as string) || fallbackName,
+      name: fallbackName,
       age: 25,
       bio: "",
       location: "",
@@ -138,7 +157,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   };
 
-  const loadProfile = async (userId: string, fallbackUser?: SupabaseUser): Promise<User | null> => {
+  const loadProfile = async (userId: string, fallbackUser?: AuthUserLike): Promise<User | null> => {
     const requestId = ++loadRequestRef.current;
     try {
       const stored = await AsyncStorage.getItem(`${PROFILE_KEY}_${userId}`);
@@ -152,7 +171,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return null;
       }
 
-      // Unblock UI immediately with cached/default profile.
       if (requestId === loadRequestRef.current) {
         setUser(profile);
         setIsLoading(false);
@@ -160,7 +178,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       saveProfile(profile).catch(() => {});
       upsertProfileToServer(profile).catch(() => {});
 
-      // Refresh verification status in background.
       (async () => {
         try {
           const { getApiUrl } = await import("@/lib/query-client");
@@ -193,6 +210,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return null;
   };
+
   const saveProfile = async (profile: User) => {
     try {
       await AsyncStorage.setItem(`${PROFILE_KEY}_${profile.id}`, JSON.stringify(profile));
@@ -203,25 +221,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: email.toLowerCase(),
-        password,
+      const baseUrl = getApiBaseUrl();
+      const apiUrl = baseUrl ? `${baseUrl}/api/auth/login` : "/api/auth/login";
+      const response = await fetchWithTimeout(apiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.toLowerCase(), password }),
       });
 
-      if (error) {
-        return { success: false, error: error.message };
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        return { success: false, error: data?.error || "Login failed" };
       }
 
-      if (data.user) {
-        await loadProfile(data.user.id, data.user);
-        try {
-          const { identifyUser } = await import("@/services/revenuecat");
-          await identifyUser(data.user.id);
-        } catch {}
-        return { success: true };
+      const authUser = data?.user as AuthUserLike | undefined;
+      if (!authUser?.id) {
+        return { success: false, error: "Login failed" };
       }
 
-      return { success: false, error: "Login failed" };
+      const nextSession: LocalSession = {
+        user: {
+          id: authUser.id,
+          email: authUser.email || email.toLowerCase(),
+          name: authUser.name,
+        },
+      };
+
+      setSession(nextSession);
+      await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(nextSession));
+      await loadProfile(authUser.id, authUser);
+
+      try {
+        const { identifyUser } = await import("@/services/revenuecat");
+        await identifyUser(authUser.id);
+      } catch {}
+
+      return { success: true };
     } catch (error) {
       console.error("Login error:", error);
       return { success: false, error: "An unexpected error occurred" };
@@ -234,44 +269,57 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     name: string
   ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const { data, error } = await supabase.auth.signUp({
-        email: email.toLowerCase(),
-        password,
-        options: {
-          data: {
-            name,
-          },
-        },
+      const baseUrl = getApiBaseUrl();
+      const apiUrl = baseUrl ? `${baseUrl}/api/auth/signup` : "/api/auth/signup";
+      const response = await fetchWithTimeout(apiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.toLowerCase(), password, name }),
       });
 
-      if (error) {
-        return { success: false, error: error.message };
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        return { success: false, error: data?.error || "Signup failed" };
       }
 
-      if (data.user) {
-        const newUser: User = {
-          id: data.user.id,
-          email: email.toLowerCase(),
-          name,
-          age: 25,
-          bio: "",
-          location: "",
-          photos: [],
-          interests: [],
-          createdAt: new Date().toISOString(),
-        };
-
-        setUser(newUser);
-        await saveProfile(newUser);
-        await upsertProfileToServer(newUser);
-        try {
-          const { identifyUser } = await import("@/services/revenuecat");
-          await identifyUser(data.user.id);
-        } catch {}
-        return { success: true };
+      const authUser = data?.user as AuthUserLike | undefined;
+      if (!authUser?.id) {
+        return { success: false, error: "Signup failed" };
       }
 
-      return { success: false, error: "Signup failed" };
+      const nextSession: LocalSession = {
+        user: {
+          id: authUser.id,
+          email: authUser.email || email.toLowerCase(),
+          name: authUser.name || name,
+        },
+      };
+
+      setSession(nextSession);
+      await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(nextSession));
+
+      const newUser: User = {
+        id: authUser.id,
+        email: authUser.email || email.toLowerCase(),
+        name: authUser.name || name,
+        age: 25,
+        bio: "",
+        location: "",
+        photos: [],
+        interests: [],
+        createdAt: new Date().toISOString(),
+      };
+
+      setUser(newUser);
+      await saveProfile(newUser);
+      upsertProfileToServer(newUser).catch(() => {});
+
+      try {
+        const { identifyUser } = await import("@/services/revenuecat");
+        await identifyUser(authUser.id);
+      } catch {}
+
+      return { success: true };
     } catch (error) {
       console.error("Signup error:", error);
       return { success: false, error: "An unexpected error occurred" };
@@ -280,7 +328,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = async () => {
     try {
-      await supabase.auth.signOut();
+      await AsyncStorage.removeItem(SESSION_KEY);
       try {
         const { logoutUser } = await import("@/services/revenuecat");
         await logoutUser();
@@ -350,36 +398,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const resetPassword = async (email: string): Promise<{ success: boolean; error?: string }> => {
-    try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email.toLowerCase());
-
-      if (error) {
-        return { success: false, error: error.message };
-      }
-
-      return { success: true };
-    } catch (error) {
-      console.error("Reset password error:", error);
-      return { success: false, error: "An unexpected error occurred" };
-    }
-  };
-
-  const sendPasswordResetOTP = async (email: string): Promise<{ success: boolean; error?: string; devCode?: string }> => {
+  const sendPasswordResetOTP = async (email: string): Promise<{ success: boolean; error?: string }> => {
     try {
       const baseUrl = getApiBaseUrl();
       const apiUrl = baseUrl
         ? `${baseUrl}/api/password-reset/send-otp`
         : "/api/password-reset/send-otp";
-      
+
       const response = await fetchWithTimeout(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: email.toLowerCase() }),
       });
 
       const data = await response.json();
-
       if (!response.ok) {
         return { success: false, error: data.error || "Failed to send verification code" };
       }
@@ -397,15 +429,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const apiUrl = baseUrl
         ? `${baseUrl}/api/password-reset/verify-otp`
         : "/api/password-reset/verify-otp";
-      
+
       const response = await fetchWithTimeout(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: email.toLowerCase(), code: otp }),
       });
 
       const data = await response.json();
-
       if (!response.ok) {
         return { success: false, error: data.error || "Invalid code" };
       }
@@ -423,15 +454,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const apiUrl = baseUrl
         ? `${baseUrl}/api/password-reset/update-password`
         : "/api/password-reset/update-password";
-      
+
       const response = await fetchWithTimeout(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: email.toLowerCase(), newPassword }),
       });
 
       const data = await response.json();
-
       if (!response.ok) {
         return { success: false, error: data.error || "Failed to update password" };
       }
@@ -441,6 +471,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       console.error("Update password error:", error);
       return { success: false, error: "Failed to update password" };
     }
+  };
+
+  const resetPassword = async (email: string): Promise<{ success: boolean; error?: string }> => {
+    return sendPasswordResetOTP(email);
   };
 
   return (
@@ -473,4 +507,3 @@ export function useAuth() {
   }
   return context;
 }
-

@@ -22,7 +22,6 @@ import { useTheme } from "@/hooks/useTheme";
 import { ActivityLocation } from "@/types";
 import { AppColors, Spacing, BorderRadius, Shadows } from "@/constants/theme";
 import { useAlert } from "@/context/AlertContext";
-import { MapView, PROVIDER_DEFAULT, PROVIDER_GOOGLE, Region, mapsAvailable } from "@/lib/maps";
 
 interface SearchResult {
   id: string;
@@ -93,12 +92,9 @@ export default function LocationPickerModal({
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [showSearchResults, setShowSearchResults] = useState(false);
   const [isLoadingUserLocation, setIsLoadingUserLocation] = useState(false);
-  const [locationPermission, setLocationPermission] = useState<boolean | null>(null);
-  const [mapRegion, setMapRegion] = useState<Region | null>(null);
   const [isSettingPin, setIsSettingPin] = useState(false);
   const [tempPinLocation, setTempPinLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const webViewRef = useRef<WebView>(null);
-  const mapViewRef = useRef<any>(null);
 
   useEffect(() => {
     if (visible && initialLocation) {
@@ -112,13 +108,6 @@ export default function LocationPickerModal({
       if (abortRef.current) abortRef.current.abort();
     };
   }, []);
-  useEffect(() => {
-    if (!visible) return;
-    Location.requestForegroundPermissionsAsync()
-      .then(({ status }) => setLocationPermission(status === "granted"))
-      .catch(() => setLocationPermission(false));
-  }, [visible]);
-
   const searchLocations = useCallback(async (query: string, limit = 8, signal?: AbortSignal): Promise<SearchResult[]> => {
     const trimmed = query.trim();
     if (trimmed.length < 2) return [];
@@ -248,13 +237,6 @@ export default function LocationPickerModal({
       setSelectedLocation(location);
       setSearchQuery(bestMatch.name);
       setTempPinLocation({ latitude: bestMatch.latitude, longitude: bestMatch.longitude });
-      setMapRegion({ latitude: bestMatch.latitude, longitude: bestMatch.longitude, latitudeDelta: 0.05, longitudeDelta: 0.05 });
-      mapViewRef.current?.animateToRegion?.({
-        latitude: bestMatch.latitude,
-        longitude: bestMatch.longitude,
-        latitudeDelta: 0.05,
-        longitudeDelta: 0.05,
-      }, 300);
       const js = `if (window.setCenter) { window.setCenter(${bestMatch.latitude}, ${bestMatch.longitude}, 12); } true;`;
       webViewRef.current?.injectJavaScript(js);
       setShowSearchResults(false);
@@ -277,14 +259,6 @@ export default function LocationPickerModal({
     setSelectedLocation(location);
     setSearchQuery(result.name);
     setTempPinLocation({ latitude: result.latitude, longitude: result.longitude });
-    const nextRegion = {
-      latitude: result.latitude,
-      longitude: result.longitude,
-      latitudeDelta: 0.05,
-      longitudeDelta: 0.05,
-    };
-    setMapRegion(nextRegion);
-    mapViewRef.current?.animateToRegion?.(nextRegion, 300);
     const js = `if (window.setCenter) { window.setCenter(${result.latitude}, ${result.longitude}, 12); } true;`;
     webViewRef.current?.injectJavaScript(js);
     setShowSearchResults(false);
@@ -330,9 +304,6 @@ export default function LocationPickerModal({
       setSelectedLocation(selectedLoc);
       setSearchQuery(name);
       setTempPinLocation({ latitude, longitude });
-      const nextRegion = { latitude, longitude, latitudeDelta: 0.05, longitudeDelta: 0.05 };
-      setMapRegion(nextRegion);
-      mapViewRef.current?.animateToRegion?.(nextRegion, 300);
       const js = `if (window.setCenter) { window.setCenter(${latitude}, ${longitude}, 12); } true;`;
       webViewRef.current?.injectJavaScript(js);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -351,17 +322,11 @@ export default function LocationPickerModal({
     }
   }, [selectedLocation, onSelectLocation, onClose]);
 
-    const handleRegionChange = useCallback((region: Region) => {
-    setMapRegion(region);
-    setTempPinLocation({ latitude: region.latitude, longitude: region.longitude });
-  }, []);
-
   const handleWebMapMessage = useCallback((event: any) => {
     try {
       const msg = JSON.parse(event.nativeEvent.data);
       if (msg?.type === "center" && typeof msg.latitude === "number" && typeof msg.longitude === "number") {
         setTempPinLocation({ latitude: msg.latitude, longitude: msg.longitude });
-        setMapRegion({ latitude: msg.latitude, longitude: msg.longitude, latitudeDelta: 0.05, longitudeDelta: 0.05 });
       }
     } catch {
       // ignore
@@ -539,64 +504,7 @@ export default function LocationPickerModal({
         </View>
 
         <View style={styles.locationListContainer}>
-          {Platform.OS !== "web" && mapsAvailable ? (
-            <View style={styles.mapContainer}>
-              <MapView
-                ref={mapViewRef}
-                style={styles.map}
-                provider={Platform.OS === "android" ? (PROVIDER_GOOGLE || PROVIDER_DEFAULT) : PROVIDER_DEFAULT}
-                initialRegion={mapRegion || {
-                  latitude: pickerCenter.latitude,
-                  longitude: pickerCenter.longitude,
-                  latitudeDelta: 0.05,
-                  longitudeDelta: 0.05,
-                }}
-                onRegionChangeComplete={handleRegionChange}
-                showsUserLocation={locationPermission === true}
-                showsMyLocationButton={false}
-              />
-              <View style={styles.centerPinContainer} pointerEvents="none">
-                <View style={styles.centerPin}>
-                  <Icon name="map-pin" size={36} color={AppColors.primary} />
-                </View>
-                <View style={styles.pinShadow} />
-              </View>
-              {tempPinLocation ? (
-                <View style={styles.confirmPinContainer}>
-                  <Pressable
-                    style={[styles.confirmPinButton, { backgroundColor: AppColors.primary }]}
-                    onPress={handleConfirmPin}
-                    disabled={isSettingPin}
-                  >
-                    {isSettingPin ? (
-                      <ActivityIndicator size="small" color="#FFFFFF" />
-                    ) : (
-                      <>
-                        <Icon name="check" size={18} color="#FFFFFF" />
-                        <ThemedText type="body" style={styles.confirmPinText}>
-                          Set Pin Here
-                        </ThemedText>
-                      </>
-                    )}
-                  </Pressable>
-                </View>
-              ) : null}
-              <ThemedText type="small" style={[styles.mapHint, { backgroundColor: theme.cardBackground }]}>
-                Drag map to move pin location
-              </ThemedText>
-              <Pressable
-                style={[styles.floatingLocationBtn, { backgroundColor: theme.cardBackground }]}
-                onPress={handleUseCurrentLocation}
-                disabled={isLoadingUserLocation}
-              >
-                {isLoadingUserLocation ? (
-                  <ActivityIndicator size="small" color={AppColors.primary} />
-                ) : (
-                  <Icon name="navigation" size={22} color={AppColors.primary} />
-                )}
-              </Pressable>
-            </View>
-          ) : Platform.OS !== "web" ? (
+          {Platform.OS !== "web" ? (
             <View style={styles.mapContainer}>
               <WebView
                 ref={webViewRef}
