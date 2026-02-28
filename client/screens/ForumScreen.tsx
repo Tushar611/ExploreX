@@ -252,7 +252,7 @@ export default function ForumScreen() {
           <EmptyState
             image={require("../../assets/images/empty-forum.png")}
             title="No Posts Yet"
-            description="Start a conversation! Share your van build progress, ask questions, or give tips to the community."
+            description="Start a conversation! Share travel plans, ask questions, or give tips to the community."
             actionLabel={isAuthenticated ? "Create Post" : undefined}
             onAction={isAuthenticated ? () => setShowCreateModal(true) : undefined}
           />

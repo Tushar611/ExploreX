@@ -8,6 +8,20 @@ export type LookingForType =
   | "networking";
 
 export type TravelBadge = "nomad" | "adventurer" | "explorer" | "none";
+export type IntentMode =
+  | "coffee_now"
+  | "explore_city"
+  | "adventure_partner"
+  | "deep_talk";
+
+export interface PlanCard {
+  id: string;
+  title: string;
+  city?: string;
+  startsAt?: string;
+  expiresAt?: string;
+  isActive?: boolean;
+}
 
 export interface User {
   id: string;
@@ -20,6 +34,10 @@ export interface User {
   interests: string[];
   vanType?: string;
   travelStyle?: string;
+  intentMode?: IntentMode;
+  activePlan?: PlanCard | null;
+  trustScore?: number;
+  meetupCount?: number;
   lookingFor?: LookingForType[];
   emergencyContact?: {
     name: string;

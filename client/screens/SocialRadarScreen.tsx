@@ -37,10 +37,12 @@ import { ThemedText } from "@/components/ThemedText";
 import { useAuth } from "@/context/AuthContext";
 import { useSubscription } from "@/context/SubscriptionContext";
 import { getApiUrl } from "@/lib/query-client";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 const RADAR_SIZE = Math.min(SCREEN_WIDTH - 48, 300);
 const RADAR_GREEN = "#00E676";
+const RADAR_CACHE_PREFIX = "@nomad_radar_cache_";
 
 interface NearbyUser {
   userId: string;
@@ -271,6 +273,39 @@ export default function SocialRadarScreen() {
     );
   }, []);
 
+
+  useEffect(() => {
+    const loadCachedScan = async () => {
+      if (!user?.id) return;
+      try {
+        const cacheKey = `${RADAR_CACHE_PREFIX}${user.id}`;
+        const raw = await AsyncStorage.getItem(cacheKey);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        const users = Array.isArray(parsed?.users) ? parsed.users : [];
+        const activities = Array.isArray(parsed?.activities) ? parsed.activities : [];
+        if (users.length === 0 && activities.length === 0) return;
+
+        setNearbyUsers(users);
+        setNearbyActivities(activities);
+        setScansUsed(Number(parsed?.scansUsed || 0));
+        setScansLimit(Number(parsed?.scansLimit || 2));
+        setActiveTab(activities.length > 0 && users.length === 0 ? "activities" : "people");
+        setScanned(true);
+      } catch {}
+    };
+
+    loadCachedScan();
+  }, [user?.id]);
+
+  const persistScanCache = async (payload: { users: NearbyUser[]; activities: NearbyActivity[]; scansUsed: number; scansLimit: number }) => {
+    if (!user?.id) return;
+    try {
+      const cacheKey = `${RADAR_CACHE_PREFIX}${user.id}`;
+      await AsyncStorage.setItem(cacheKey, JSON.stringify(payload));
+    } catch {}
+  };
+
   const startScanAnimation = () => {
     sweepRotation.value = 0;
     sweepRotation.value = withRepeat(
@@ -289,7 +324,7 @@ export default function SocialRadarScreen() {
     setScanning(true);
     setLocationError(null);
     setSelectedUser(null);
-    setRequestSent(new Set());
+    setLimitReached(false);
     startScanAnimation();
 
     try {
@@ -326,6 +361,9 @@ export default function SocialRadarScreen() {
       }
 
       const baseUrl = getApiUrl();
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 12000);
+
       const response = await fetch(new URL("/api/radar/scan", baseUrl).toString(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -336,7 +374,10 @@ export default function SocialRadarScreen() {
           radiusKm: 50,
           tier,
         }),
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
 
       if (response.status === 403) {
         setLimitReached(true);
@@ -350,15 +391,21 @@ export default function SocialRadarScreen() {
 
       const data = await response.json();
 
-      await new Promise((resolve) => setTimeout(resolve, 3000));
-
       stopScanAnimation();
-      setNearbyUsers(data.users || []);
-      setNearbyActivities(data.activities || []);
-      setScansUsed(data.scansUsed || 0);
-      setScansLimit(data.scansLimit || 2);
+      const users = data.users || [];
+      const activities = data.activities || [];
+      const used = data.scansUsed || 0;
+      const limit = data.scansLimit || 2;
+
+      setNearbyUsers(users);
+      setNearbyActivities(activities);
+      setScansUsed(used);
+      setScansLimit(limit);
+      setActiveTab(activities.length > 0 && users.length === 0 ? "activities" : "people");
       setScanned(true);
       setScanning(false);
+
+      persistScanCache({ users, activities, scansUsed: used, scansLimit: limit }).catch(() => {});
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (err: any) {
@@ -394,7 +441,7 @@ export default function SocialRadarScreen() {
       const baseUrl = getApiUrl();
 
       const { data: myProfile } = await fetch(
-        new URL(`/api/profile/${user.id}`, baseUrl).toString()
+        new URL(`/api/user-profiles/${user.id}`, baseUrl).toString()
       ).then(r => r.json().then(d => ({ data: d })).catch(() => ({ data: null })));
 
       const response = await fetch(new URL("/api/radar/chat-request", baseUrl).toString(), {

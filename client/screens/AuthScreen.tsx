@@ -278,7 +278,7 @@ export default function AuthScreen() {
           <View style={styles.logoContainer}>
             <VanLogo size={80} color={AppColors.primary} />
           </View>
-          <ThemedText style={styles.appName}>Nomad Connect</ThemedText>
+          <ThemedText style={styles.appName}>ExploreX</ThemedText>
           <ThemedText style={styles.tagline}>Find your tribe on the road</ThemedText>
         </Animated.View>
 
@@ -403,7 +403,7 @@ export default function AuthScreen() {
 
         <Animated.View entering={FadeIn.delay(500).duration(600)} style={styles.footer}>
           <ThemedText style={styles.footerText}>
-            {isLogin ? "New to Nomad Connect? " : "Already a member? "}
+            {isLogin ? "New to ExploreX? " : "Already a member? "}
           </ThemedText>
           <Pressable onPress={toggleMode} testID="button-toggle-auth">
             <ThemedText style={styles.footerLink}>

@@ -385,7 +385,7 @@ export default function CustomerCenterScreen() {
           <ThemedText
             style={[styles.footerText, { color: theme.textSecondary }]}
           >
-            Need help? Contact support at support@nomadconnect.app
+            Need help? Contact support at support@explorex.app
           </ThemedText>
         </Animated.View>
       </ScrollView>

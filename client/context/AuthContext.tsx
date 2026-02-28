@@ -102,6 +102,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             interests: profile.interests,
             photos: profile.photos,
             location: profile.location,
+            intentMode: profile.intentMode,
+            activePlan: profile.activePlan,
           }),
         },
         15000
@@ -153,6 +155,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       location: "",
       photos: [],
       interests: [],
+      intentMode: "explore_city",
+      activePlan: null,
+      trustScore: 20,
+      meetupCount: 0,
       createdAt: new Date().toISOString(),
     };
   };
@@ -307,6 +313,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         location: "",
         photos: [],
         interests: [],
+        intentMode: "explore_city",
+        activePlan: null,
+        trustScore: 20,
+        meetupCount: 0,
         createdAt: new Date().toISOString(),
       };
 
@@ -361,6 +371,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           interests: data.interests || user.interests,
           lookingFor: data.looking_for || data.lookingFor || user.lookingFor,
           travelStyle: data.travel_style || data.travelStyle || user.travelStyle,
+          intentMode: data.intent_mode || data.intentMode || user.intentMode,
+          activePlan: data.active_plan || data.activePlan || user.activePlan || null,
+          trustScore: data.trust_score ?? data.trustScore ?? user.trustScore,
+          meetupCount: data.meetup_count ?? data.meetupCount ?? user.meetupCount,
         };
       }
 

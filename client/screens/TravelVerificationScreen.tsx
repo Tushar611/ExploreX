@@ -209,7 +209,7 @@ export default function TravelVerificationScreen({ onVerified, onExit }: Props) 
         Verify Your Travel Lifestyle
       </ThemedText>
       <ThemedText style={[styles.welcomeSubtitle, { color: "#6B4930" }]}>
-        To keep Nomad Connect safe, please complete travel verification first.
+        To keep ExploreX safe, please complete travel verification first.
       </ThemedText>
 
       <View style={styles.welcomeSteps}>
@@ -501,7 +501,7 @@ export default function TravelVerificationScreen({ onVerified, onExit }: Props) 
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 0 }}
               >
-                <ThemedText style={styles.primaryBtnText}>Enter Nomad Connect</ThemedText>
+                <ThemedText style={styles.primaryBtnText}>Enter ExploreX</ThemedText>
                 <Ionicons name="arrow-forward" size={20} color="#FFF" />
               </LinearGradient>
             </Pressable>

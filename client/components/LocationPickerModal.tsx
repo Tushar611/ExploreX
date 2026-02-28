@@ -38,7 +38,7 @@ interface Props {
   initialLocation?: ActivityLocation | null;
 }
 
-const SEARCH_USER_AGENT = "NomadConnect/1.0 (contact: support@nomadconnect.app)";
+const SEARCH_USER_AGENT = "ExploreX/1.0 (contact: support@explorex.app)";
 
 const buildPickerMapHtml = (center: { latitude: number; longitude: number }) => {
   return `

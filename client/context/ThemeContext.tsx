@@ -73,7 +73,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     await AsyncStorage.multiRemove([THEME_MODE_KEY, CUSTOM_THEME_KEY]);
   };
 
-  const isDark = false;
+  const isDark =
+    themeMode === "dark" ||
+    (themeMode === "system" && systemColorScheme === "dark");
 
   return (
     <ThemeContext.Provider

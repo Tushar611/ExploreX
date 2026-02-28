@@ -73,7 +73,7 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
         </ThemedText>
 
         <ThemedText type="body" style={styles.message}>
-          Nomad Connect hit an unexpected bump. Don't worry, your data is safe!
+          ExploreX hit an unexpected bump. Don't worry, your data is safe!
         </ThemedText>
 
         <Pressable

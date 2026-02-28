@@ -44,13 +44,13 @@ export async function sendOTPEmail(toEmail: string, code: string): Promise<boole
     
     // Use Resend's default sender for testing (works without domain verification)
     const { error } = await client.emails.send({
-      from: 'Nomad Connect <onboarding@resend.dev>',
+      from: 'ExploreX <onboarding@resend.dev>',
       to: toEmail,
-      subject: 'Your Nomad Connect Password Reset Code',
+      subject: 'Your ExploreX Password Reset Code',
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
           <h2 style="color: #E8744F;">Password Reset</h2>
-          <p>You requested to reset your password for Nomad Connect.</p>
+          <p>You requested to reset your password for ExploreX.</p>
           <p>Your verification code is:</p>
           <div style="background: #f5f5f5; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;">
             <span style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #333;">${code}</span>
@@ -58,7 +58,7 @@ export async function sendOTPEmail(toEmail: string, code: string): Promise<boole
           <p>This code expires in 10 minutes.</p>
           <p>If you didn't request this, please ignore this email.</p>
           <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
-          <p style="color: #888; font-size: 12px;">Nomad Connect - Connect with fellow travelers</p>
+          <p style="color: #888; font-size: 12px;">ExploreX - Connect with fellow travelers</p>
         </div>
       `
     });

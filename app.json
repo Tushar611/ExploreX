@@ -1,16 +1,16 @@
 {
   "expo": {
-    "name": "Nomad Connect",
-    "slug": "nomad-connect",
+    "name": "ExploreX",
+    "slug": "explorex",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "nomadconnect",
+    "scheme": "explorex",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.tushar.nomadconnect.app"
+      "bundleIdentifier": "com.tushar.explorex.app"
     },
     "android": {
       "permissions": ["ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION"],
@@ -21,7 +21,7 @@
       },
       "edgeToEdgeEnabled": false,
       "predictiveBackGestureEnabled": false,
-      "package": "com.tushar.nomadconnect.app"
+      "package": "com.tushar.explorex.app"
     },
     "web": {
       "output": "single",
@@ -31,7 +31,7 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/icon.png",
+          "image": "./assets/images/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#FDFCFB",

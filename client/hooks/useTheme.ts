@@ -10,7 +10,9 @@ export function useTheme() {
   const themeMode = context?.themeMode ?? "system";
   const customTheme = context?.customTheme ?? null;
   
-  const isDark = false;
+  const isDark =
+    themeMode === "dark" ||
+    (themeMode === "system" && systemColorScheme === "dark");
     
   const baseTheme = isDark ? Colors.dark : Colors.light;
   

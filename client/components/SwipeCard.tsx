@@ -29,6 +29,13 @@ const SWIPE_THRESHOLD = SCREEN_WIDTH * 0.3;
 const PILL_SUNSET = { bg: "rgba(232, 116, 79, 0.85)", text: "#FFFFFF" };
 const PILL_GOLD = { bg: "rgba(255, 179, 71, 0.85)", text: "#FFFFFF" };
 
+const INTENT_LABELS: Record<string, string> = {
+  coffee_now: "Coffee Now",
+  explore_city: "Explore City",
+  adventure_partner: "Adventure Partner",
+  deep_talk: "Deep Talk",
+};
+
 interface SwipeCardProps {
   user: User;
   distance?: number;
@@ -128,6 +135,9 @@ export function SwipeCard({
     pills.push({ label: interest, type: "hobby" });
   });
 
+  const intentLabel = INTENT_LABELS[user.intentMode || "explore_city"] || "Explore City";
+  const trustScore = Math.max(0, Math.min(100, Number(user.trustScore || 0)));
+
   return (
     <GestureDetector gesture={panGesture}>
       <Animated.View style={[styles.card, { width: CARD_WIDTH, height: CARD_HEIGHT }, cardStyle, Shadows.large]}>
@@ -165,6 +175,27 @@ export function SwipeCard({
             <ThemedText style={styles.bio} numberOfLines={2}>
               {user.bio}
             </ThemedText>
+          ) : null}
+
+          <View style={styles.signalRow}>
+            <View style={styles.intentPill}>
+              <Icon name="compass" size={11} color="#FFF" />
+              <ThemedText style={styles.signalText}>{intentLabel}</ThemedText>
+            </View>
+            <View style={styles.trustPill}>
+              <Icon name="shield" size={11} color="#FFF" />
+              <ThemedText style={styles.signalText}>Trust {trustScore}%</ThemedText>
+            </View>
+          </View>
+
+          {user.activePlan?.title ? (
+            <View style={styles.planPill}>
+              <Icon name="calendar" size={11} color="#FFF" />
+              <ThemedText style={styles.signalText} numberOfLines={1}>
+                {user.activePlan.title}
+                {user.activePlan.city ? ` - ${user.activePlan.city}` : ""}
+              </ThemedText>
+            </View>
           ) : null}
 
           <View style={styles.pillsRow}>
@@ -265,6 +296,46 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     marginTop: 2,
     marginBottom: 4,
+  },
+  signalRow: {
+    flexDirection: "row",
+    gap: 6,
+    marginBottom: 6,
+  },
+  intentPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "rgba(59,130,246,0.8)",
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  trustPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "rgba(34,197,94,0.8)",
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  planPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "rgba(168,85,247,0.8)",
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    marginBottom: 6,
+    alignSelf: "flex-start",
+    maxWidth: "98%",
+  },
+  signalText: {
+    color: "#FFF",
+    fontSize: 11,
+    fontWeight: "700" as const,
   },
   pillsRow: {
     flexDirection: "row",

@@ -46,13 +46,13 @@ async function sendOTPEmail(toEmail, code) {
   try {
     const { client } = await getResendClient();
     const { error } = await client.emails.send({
-      from: "Nomad Connect <onboarding@resend.dev>",
+      from: "ExploreX <onboarding@resend.dev>",
       to: toEmail,
-      subject: "Your Nomad Connect Password Reset Code",
+      subject: "Your ExploreX Password Reset Code",
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
           <h2 style="color: #E8744F;">Password Reset</h2>
-          <p>You requested to reset your password for Nomad Connect.</p>
+          <p>You requested to reset your password for ExploreX.</p>
           <p>Your verification code is:</p>
           <div style="background: #f5f5f5; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;">
             <span style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #333;">${code}</span>
@@ -60,7 +60,7 @@ async function sendOTPEmail(toEmail, code) {
           <p>This code expires in 10 minutes.</p>
           <p>If you didn't request this, please ignore this email.</p>
           <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
-          <p style="color: #888; font-size: 12px;">Nomad Connect - Connect with fellow travelers</p>
+          <p style="color: #888; font-size: 12px;">ExploreX - Connect with fellow travelers</p>
         </div>
       `
     });
@@ -87,8 +87,10 @@ import express from "express";
 // server/routes.ts
 import { createServer } from "node:http";
 import * as path from "node:path";
+import * as fs from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import { Pool } from "pg";
+import multer from "multer";
 import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
 async function callGroqChat(messages) {
   if (!groqApiKey) {
@@ -113,7 +115,7 @@ async function callGroqChat(messages) {
   const data = JSON.parse(text);
   return data.choices?.[0]?.message?.content || "";
 }
-var supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || "";
+var supabaseUrl = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL || "";
 var supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 var supabaseAdmin = supabaseServiceKey ? createClient(supabaseUrl, supabaseServiceKey, {
   auth: { autoRefreshToken: false, persistSession: false }
@@ -190,7 +192,287 @@ async function ensureAuthTables() {
     );
   `);
 }
-var VAN_BUILD_SYSTEM_PROMPT = `You are an expert van conversion advisor for the Nomad Connect app. You help van lifers and nomads with:
+var uploadsRootDir = path.resolve(process.cwd(), "uploads");
+function ensureUploadsDir() {
+  if (!fs.existsSync(uploadsRootDir)) {
+    fs.mkdirSync(uploadsRootDir, { recursive: true });
+  }
+}
+function sanitizeCategory(value) {
+  const category = String(value || "file").toLowerCase();
+  if (category === "photo" || category === "audio") return category;
+  return "file";
+}
+var VALID_INTENT_MODES = [
+  "coffee_now",
+  "explore_city",
+  "adventure_partner",
+  "deep_talk"
+];
+var INTENT_CHAT_PROMPTS = {
+  coffee_now: [
+    "Best nearby coffee place in the next 30 minutes?",
+    "What drink are you ordering first?",
+    "Want to do a quick 20-min coffee and walk?"
+  ],
+  explore_city: [
+    "One hidden spot in this city you love?",
+    "Sunset point or street-food lane first?",
+    "What neighborhood should we explore together?"
+  ],
+  adventure_partner: [
+    "Hike, surf, or road trip this weekend?",
+    "What gear do you always carry for adventures?",
+    "Want to plan a short micro-adventure for tomorrow?"
+  ],
+  deep_talk: [
+    "What changed your perspective recently?",
+    "What does a meaningful connection look like to you?",
+    "What kind of conversations do you wish people had more often?"
+  ]
+};
+function normalizeIntentMode(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (VALID_INTENT_MODES.includes(raw)) {
+    return raw;
+  }
+  return "explore_city";
+}
+function getDayKey(date = /* @__PURE__ */ new Date()) {
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+function computeTrustScore(input) {
+  let score = 10;
+  if (input.isTravelVerified) score += 35;
+  const photos = Array.isArray(input.photos) ? input.photos.length : 0;
+  const interests = Array.isArray(input.interests) ? input.interests.length : 0;
+  const bioLen = String(input.bio || "").trim().length;
+  if (photos >= 1) score += 10;
+  if (photos >= 3) score += 10;
+  if (interests >= 3) score += 10;
+  if (bioLen >= 40) score += 10;
+  const meetups = Math.max(0, Number(input.meetupCount || 0));
+  score += Math.min(15, meetups * 3);
+  return Math.max(0, Math.min(100, score));
+}
+async function ensureExploreXTables() {
+  if (!pgPool) return;
+  await pgPool.query(`
+    CREATE TABLE IF NOT EXISTS explorex_intents (
+      user_id TEXT PRIMARY KEY,
+      mode TEXT NOT NULL DEFAULT 'explore_city',
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pgPool.query(`
+    CREATE TABLE IF NOT EXISTS explorex_plan_cards (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      city TEXT,
+      starts_at TIMESTAMP,
+      expires_at TIMESTAMP,
+      is_active BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pgPool.query(`
+    CREATE TABLE IF NOT EXISTS explorex_meetups (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_a_id TEXT NOT NULL,
+      user_b_id TEXT NOT NULL,
+      venue_name TEXT,
+      venue_address TEXT,
+      midpoint_lat DOUBLE PRECISION,
+      midpoint_lng DOUBLE PRECISION,
+      status TEXT DEFAULT 'planned',
+      scheduled_at TIMESTAMP,
+      completed_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pgPool.query(`
+    CREATE TABLE IF NOT EXISTS explorex_journey_entries (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_a_id TEXT NOT NULL,
+      user_b_id TEXT NOT NULL,
+      title TEXT,
+      summary TEXT,
+      city TEXT,
+      met_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pgPool.query(`
+    CREATE TABLE IF NOT EXISTS explorex_daily_serendipity (
+      user_id TEXT NOT NULL,
+      day_key TEXT NOT NULL,
+      target_user_id TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      PRIMARY KEY (user_id, day_key)
+    );
+  `);
+}
+async function ensureSocialTables() {
+  if (!pgPool) return;
+  await pgPool.query(`
+    CREATE TABLE IF NOT EXISTS swipes (
+      id TEXT PRIMARY KEY,
+      swiper_id TEXT NOT NULL,
+      swiped_id TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(swiper_id, swiped_id)
+    );
+  `);
+  await pgPool.query(`
+    CREATE TABLE IF NOT EXISTS matches (
+      id TEXT PRIMARY KEY,
+      user_a_id TEXT NOT NULL,
+      user_b_id TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_a_id, user_b_id)
+    );
+  `);
+  await pgPool.query(`
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id TEXT PRIMARY KEY,
+      match_id TEXT NOT NULL,
+      sender_id TEXT NOT NULL,
+      content TEXT DEFAULT '',
+      type TEXT DEFAULT 'text',
+      photo_url TEXT,
+      file_url TEXT,
+      file_name TEXT,
+      audio_url TEXT,
+      audio_duration DOUBLE PRECISION,
+      reply_to JSONB,
+      location JSONB,
+      reactions JSONB DEFAULT '{}'::jsonb,
+      status TEXT DEFAULT 'sent',
+      created_at TIMESTAMP DEFAULT NOW(),
+      edited_at TIMESTAMP
+    );
+  `);
+  await pgPool.query(`
+    CREATE TABLE IF NOT EXISTS user_locations (
+      user_id TEXT PRIMARY KEY,
+      lat DOUBLE PRECISION NOT NULL,
+      lng DOUBLE PRECISION NOT NULL,
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pgPool.query(`
+    CREATE TABLE IF NOT EXISTS radar_chat_requests (
+      id TEXT PRIMARY KEY,
+      sender_id TEXT NOT NULL,
+      receiver_id TEXT NOT NULL,
+      sender_name TEXT,
+      sender_photo TEXT,
+      receiver_name TEXT,
+      receiver_photo TEXT,
+      message TEXT,
+      status TEXT DEFAULT 'pending',
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pgPool.query(`
+    CREATE TABLE IF NOT EXISTS compatibility_history (
+      id TEXT PRIMARY KEY,
+      user_a TEXT NOT NULL,
+      user_b TEXT NOT NULL,
+      score INTEGER,
+      strengths JSONB,
+      conflicts JSONB,
+      icebreakers JSONB,
+      first_message TEXT,
+      date_idea TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_swipes_swiper ON swipes(swiper_id);`);
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_swipes_swiped ON swipes(swiped_id);`);
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_matches_usera ON matches(user_a_id);`);
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_matches_userb ON matches(user_b_id);`);
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_chat_messages_match ON chat_messages(match_id);`);
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_user_locations_updated ON user_locations(updated_at DESC);`);
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_radar_requests_receiver ON radar_chat_requests(receiver_id, status, created_at DESC);`);
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_radar_requests_sender ON radar_chat_requests(sender_id, created_at DESC);`);
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_compat_a ON compatibility_history(user_a, created_at DESC);`);
+  await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_compat_b ON compatibility_history(user_b, created_at DESC);`);
+}
+async function loadExploreXMetaForUsers(userIds) {
+  if (!pgPool || userIds.length === 0) {
+    return { intentByUser: {}, planByUser: {}, meetupCountByUser: {} };
+  }
+  const uniqueIds = Array.from(new Set(userIds));
+  const [intentRes, planRes, meetupRes] = await Promise.all([
+    pgPool.query(
+      `SELECT user_id, mode FROM explorex_intents WHERE user_id = ANY($1::text[])`,
+      [uniqueIds]
+    ),
+    pgPool.query(
+      `SELECT DISTINCT ON (user_id) user_id, id, title, city, starts_at, expires_at, is_active, updated_at
+       FROM explorex_plan_cards
+       WHERE user_id = ANY($1::text[]) AND is_active = TRUE
+       ORDER BY user_id, updated_at DESC`,
+      [uniqueIds]
+    ),
+    pgPool.query(
+      `SELECT uid AS user_id, COUNT(*)::int AS count FROM (
+          SELECT user_a_id AS uid FROM explorex_meetups WHERE status = 'completed' AND user_a_id = ANY($1::text[])
+          UNION ALL
+          SELECT user_b_id AS uid FROM explorex_meetups WHERE status = 'completed' AND user_b_id = ANY($1::text[])
+       ) t
+       GROUP BY uid`,
+      [uniqueIds]
+    )
+  ]);
+  const intentByUser = {};
+  for (const row of intentRes.rows) {
+    intentByUser[row.user_id] = normalizeIntentMode(row.mode);
+  }
+  const planByUser = {};
+  for (const row of planRes.rows) {
+    planByUser[row.user_id] = {
+      id: row.id,
+      title: row.title,
+      city: row.city || void 0,
+      startsAt: row.starts_at || void 0,
+      expiresAt: row.expires_at || void 0,
+      isActive: row.is_active
+    };
+  }
+  const meetupCountByUser = {};
+  for (const row of meetupRes.rows) {
+    meetupCountByUser[row.user_id] = Number(row.count || 0);
+  }
+  return { intentByUser, planByUser, meetupCountByUser };
+}
+function addExploreXProfileFields(profile, meta) {
+  const userId = String(profile.id || "");
+  const meetupCount = Number(meta.meetupCountByUser[userId] || 0);
+  const trustScore = computeTrustScore({
+    isTravelVerified: Boolean(profile.is_travel_verified ?? profile.isTravelVerified),
+    photos: profile.photos,
+    interests: profile.interests,
+    bio: profile.bio,
+    meetupCount
+  });
+  return {
+    ...profile,
+    intent_mode: meta.intentByUser[userId] || "explore_city",
+    active_plan: meta.planByUser[userId] || null,
+    meetup_count: meetupCount,
+    trust_score: trustScore
+  };
+}
+var VAN_BUILD_SYSTEM_PROMPT = `You are an expert van conversion advisor for the ExploreX app. You help van lifers and nomads with:
 - Van conversion planning and design
 - Electrical systems (solar, batteries, inverters)
 - Plumbing and water systems
@@ -207,6 +489,45 @@ Keep responses concise but helpful. Use bullet points for lists. If someone asks
 async function registerRoutes(app2) {
   checkSupabaseTables().catch((err) => console.error("[DB] Table check failed:", err));
   ensureAuthTables().catch((err) => console.error("[DB] Auth table setup failed:", err));
+  ensureExploreXTables().catch((err) => console.error("[DB] ExploreX table setup failed:", err));
+  ensureSocialTables().catch((err) => console.error("[DB] Social table setup failed:", err));
+  ensureUploadsDir();
+  const uploadStorage = multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, uploadsRootDir),
+    filename: (req, file, cb) => {
+      const category = sanitizeCategory(req.body?.category);
+      const ext = path.extname(file.originalname || "") || "";
+      const safeExt = ext.replace(/[^a-zA-Z0-9.]/g, "").slice(0, 10);
+      const unique = `${category}_${Date.now()}_${randomBytes(4).toString("hex")}${safeExt}`;
+      cb(null, unique);
+    }
+  });
+  const uploadMiddleware = multer({
+    storage: uploadStorage,
+    limits: { fileSize: 25 * 1024 * 1024 }
+  });
+  app2.post("/api/uploads", uploadMiddleware.single("file"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "File is required" });
+      }
+      const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "https");
+      const host = String(req.headers["x-forwarded-host"] || req.headers.host || "");
+      const isAbsolute = host.length > 0;
+      const relativeUrl = `/uploads/${req.file.filename}`;
+      const url = isAbsolute ? `${proto}://${host}${relativeUrl}` : relativeUrl;
+      return res.json({
+        success: true,
+        url,
+        fileName: req.file.originalname,
+        fileType: req.file.mimetype || "application/octet-stream",
+        size: req.file.size
+      });
+    } catch (error) {
+      console.error("Upload failed:", error);
+      return res.status(500).json({ error: "Upload failed" });
+    }
+  });
   app2.post("/api/auth/signup", async (req, res) => {
     try {
       if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
@@ -652,7 +973,7 @@ ${vanDetails}` }
       if (error) throw error;
       const message = {
         id: messageId,
-        activityId,
+        activityId: String(activityId),
         senderId,
         senderName,
         senderPhoto,
@@ -958,7 +1279,7 @@ ${vanDetails}` }
                 template_params: {
                   to_email: emergencyContact.email,
                   to_name: emergencyContact.name || "Emergency Contact",
-                  from_name: "Nomad Connect SOS",
+                  from_name: "ExploreX SOS",
                   message
                 }
               })
@@ -1079,7 +1400,7 @@ ${vanDetails}` }
                 to_email: normalizedEmail,
                 to_name: normalizedEmail.split("@")[0],
                 message: `Your verification code is: ${code}`,
-                from_name: "Nomad Connect"
+                from_name: "ExploreX"
               }
             })
           });
@@ -1197,7 +1518,7 @@ ${vanDetails}` }
   });
   app2.post("/api/user-profiles/upsert", async (req, res) => {
     try {
-      const { id, name, age, bio, interests, photos, location } = req.body;
+      const { id, name, age, bio, interests, photos, location, intentMode, activePlan } = req.body;
       if (!id) return res.status(400).json({ error: "User ID is required" });
       if (pgPool) {
         const result = await pgPool.query(
@@ -1230,7 +1551,30 @@ ${vanDetails}` }
             Date.now()
           ]
         );
-        return res.json(result.rows[0]);
+        const normalizedIntent = normalizeIntentMode(intentMode);
+        await pgPool.query(
+          `INSERT INTO explorex_intents (user_id, mode, updated_at)
+           VALUES ($1, $2, NOW())
+           ON CONFLICT (user_id) DO UPDATE SET mode = EXCLUDED.mode, updated_at = NOW()`,
+          [id, normalizedIntent]
+        );
+        if (activePlan && typeof activePlan.title === "string" && activePlan.title.trim().length > 0) {
+          await pgPool.query(`UPDATE explorex_plan_cards SET is_active = FALSE, updated_at = NOW() WHERE user_id = $1`, [id]);
+          await pgPool.query(
+            `INSERT INTO explorex_plan_cards (user_id, title, city, starts_at, expires_at, is_active, updated_at)
+             VALUES ($1, $2, $3, $4, $5, TRUE, NOW())`,
+            [
+              id,
+              String(activePlan.title).trim(),
+              activePlan.city ? String(activePlan.city).trim() : null,
+              activePlan.startsAt ? new Date(activePlan.startsAt) : null,
+              activePlan.expiresAt ? new Date(activePlan.expiresAt) : null
+            ]
+          );
+        }
+        const meta = await loadExploreXMetaForUsers([id]);
+        const enriched = addExploreXProfileFields(result.rows[0], meta);
+        return res.json(enriched);
       }
       const sb = getSupabase();
       const { data: existing, error: selectError } = await sb.from("user_profiles").select("id").eq("id", id);
@@ -1266,7 +1610,7 @@ ${vanDetails}` }
       }
       const { data: row, error: getError } = await sb.from("user_profiles").select("*").eq("id", id).single();
       if (getError) throw getError;
-      res.json(row);
+      res.json({ ...row, intent_mode: normalizeIntentMode(intentMode), active_plan: activePlan || null });
     } catch (error) {
       console.error("Upsert profile error:", error);
       res.status(500).json({ error: "Failed to upsert profile" });
@@ -1282,7 +1626,9 @@ ${vanDetails}` }
         if (!result.rowCount) {
           return res.status(404).json({ error: "Profile not found" });
         }
-        return res.json(result.rows[0]);
+        const row = result.rows[0];
+        const meta = await loadExploreXMetaForUsers([String(req.params.userId)]);
+        return res.json(addExploreXProfileFields(row, meta));
       }
       const sb = getSupabase();
       const { data, error } = await sb.from("user_profiles").select("*").eq("id", req.params.userId).single();
@@ -1292,10 +1638,295 @@ ${vanDetails}` }
         }
         throw error;
       }
-      res.json(data);
+      res.json({
+        ...data,
+        intent_mode: "explore_city",
+        active_plan: null,
+        meetup_count: 0,
+        trust_score: computeTrustScore({
+          isTravelVerified: data?.is_travel_verified,
+          photos: data?.photos,
+          interests: data?.interests,
+          bio: data?.bio,
+          meetupCount: 0
+        })
+      });
     } catch (error) {
       console.error("Get profile error:", error);
       res.status(500).json({ error: "Failed to get profile" });
+    }
+  });
+  app2.post("/api/explorex/intent/:userId", async (req, res) => {
+    try {
+      if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
+      const userId = req.params.userId;
+      const mode = normalizeIntentMode(req.body?.mode);
+      await pgPool.query(
+        `INSERT INTO explorex_intents (user_id, mode, updated_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (user_id) DO UPDATE SET mode = EXCLUDED.mode, updated_at = NOW()`,
+        [userId, mode]
+      );
+      return res.json({ success: true, userId, mode });
+    } catch (error) {
+      console.error("Set intent error:", error);
+      return res.status(500).json({ error: "Failed to set intent" });
+    }
+  });
+  app2.get("/api/explorex/intent/:userId", async (req, res) => {
+    try {
+      if (!pgPool) return res.json({ mode: "explore_city" });
+      const userId = req.params.userId;
+      const result = await pgPool.query(
+        `SELECT mode, updated_at FROM explorex_intents WHERE user_id = $1 LIMIT 1`,
+        [userId]
+      );
+      if (!result.rowCount) return res.json({ mode: "explore_city" });
+      return res.json({ mode: normalizeIntentMode(result.rows[0].mode), updatedAt: result.rows[0].updated_at });
+    } catch (error) {
+      console.error("Get intent error:", error);
+      return res.json({ mode: "explore_city" });
+    }
+  });
+  app2.get("/api/explorex/plans/:userId", async (req, res) => {
+    try {
+      if (!pgPool) return res.json([]);
+      const userId = req.params.userId;
+      const result = await pgPool.query(
+        `SELECT id, title, city, starts_at, expires_at, is_active, created_at, updated_at
+         FROM explorex_plan_cards
+         WHERE user_id = $1
+         ORDER BY is_active DESC, updated_at DESC
+         LIMIT 20`,
+        [userId]
+      );
+      return res.json(result.rows.map((row) => ({
+        id: row.id,
+        title: row.title,
+        city: row.city || void 0,
+        startsAt: row.starts_at || void 0,
+        expiresAt: row.expires_at || void 0,
+        isActive: row.is_active,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      })));
+    } catch (error) {
+      console.error("Get plans error:", error);
+      return res.json([]);
+    }
+  });
+  app2.post("/api/explorex/plans/:userId", async (req, res) => {
+    try {
+      if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
+      const userId = req.params.userId;
+      const title = String(req.body?.title || "").trim();
+      const city = String(req.body?.city || "").trim() || null;
+      const startsAt = req.body?.startsAt ? new Date(req.body.startsAt) : null;
+      const expiresAt = req.body?.expiresAt ? new Date(req.body.expiresAt) : null;
+      const activate = req.body?.isActive !== false;
+      if (!title) return res.status(400).json({ error: "Plan title is required" });
+      if (activate) {
+        await pgPool.query(`UPDATE explorex_plan_cards SET is_active = FALSE, updated_at = NOW() WHERE user_id = $1`, [userId]);
+      }
+      const result = await pgPool.query(
+        `INSERT INTO explorex_plan_cards (user_id, title, city, starts_at, expires_at, is_active, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW())
+         RETURNING id, title, city, starts_at, expires_at, is_active, created_at, updated_at`,
+        [userId, title, city, startsAt, expiresAt, activate]
+      );
+      return res.json({
+        id: result.rows[0].id,
+        title: result.rows[0].title,
+        city: result.rows[0].city || void 0,
+        startsAt: result.rows[0].starts_at || void 0,
+        expiresAt: result.rows[0].expires_at || void 0,
+        isActive: result.rows[0].is_active,
+        createdAt: result.rows[0].created_at
+      });
+    } catch (error) {
+      console.error("Create plan error:", error);
+      return res.status(500).json({ error: "Failed to create plan" });
+    }
+  });
+  app2.post("/api/explorex/plans/:userId/:planId/activate", async (req, res) => {
+    try {
+      if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
+      const { userId, planId } = req.params;
+      await pgPool.query(`UPDATE explorex_plan_cards SET is_active = FALSE, updated_at = NOW() WHERE user_id = $1`, [userId]);
+      await pgPool.query(`UPDATE explorex_plan_cards SET is_active = TRUE, updated_at = NOW() WHERE user_id = $1 AND id = $2`, [userId, planId]);
+      return res.json({ success: true });
+    } catch (error) {
+      console.error("Activate plan error:", error);
+      return res.status(500).json({ error: "Failed to activate plan" });
+    }
+  });
+  app2.delete("/api/explorex/plans/:userId/:planId", async (req, res) => {
+    try {
+      if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
+      const { userId, planId } = req.params;
+      await pgPool.query(`DELETE FROM explorex_plan_cards WHERE user_id = $1 AND id = $2`, [userId, planId]);
+      return res.json({ success: true });
+    } catch (error) {
+      console.error("Delete plan error:", error);
+      return res.status(500).json({ error: "Failed to delete plan" });
+    }
+  });
+  app2.post("/api/explorex/chat-starters", async (req, res) => {
+    try {
+      const intent = normalizeIntentMode(req.body?.intentMode);
+      const city = String(req.body?.city || "").trim();
+      const local = INTENT_CHAT_PROMPTS[intent] || INTENT_CHAT_PROMPTS.explore_city;
+      const starters = city ? local.map((v) => `${v} (${city})`) : local;
+      return res.json({ starters: starters.slice(0, 3) });
+    } catch {
+      return res.json({ starters: INTENT_CHAT_PROMPTS.explore_city });
+    }
+  });
+  app2.post("/api/explorex/meet-now/suggest", async (req, res) => {
+    try {
+      const { userId, targetUserId } = req.body || {};
+      if (!userId || !targetUserId) {
+        return res.status(400).json({ error: "userId and targetUserId are required" });
+      }
+      const sb = getSupabase();
+      const { data: locRows } = await sb.from("user_locations").select("user_id, lat, lng").in("user_id", [userId, targetUserId]);
+      let midpointLat = null;
+      let midpointLng = null;
+      if (locRows && locRows.length === 2) {
+        const a = locRows.find((row) => row.user_id === userId);
+        const b = locRows.find((row) => row.user_id === targetUserId);
+        if (a && b) {
+          midpointLat = (Number(a.lat) + Number(b.lat)) / 2;
+          midpointLng = (Number(a.lng) + Number(b.lng)) / 2;
+        }
+      }
+      const venueName = "Public cafe near midpoint";
+      const venueAddress = midpointLat && midpointLng ? `${midpointLat.toFixed(4)}, ${midpointLng.toFixed(4)}` : "Choose a public place between both of you";
+      let meetupId = null;
+      if (pgPool) {
+        const created = await pgPool.query(
+          `INSERT INTO explorex_meetups (
+              user_a_id, user_b_id, venue_name, venue_address,
+              midpoint_lat, midpoint_lng, status, scheduled_at
+           ) VALUES ($1,$2,$3,$4,$5,$6,'planned', NOW())
+           RETURNING id`,
+          [userId, targetUserId, venueName, venueAddress, midpointLat, midpointLng]
+        );
+        meetupId = created.rows[0]?.id || null;
+      }
+      return res.json({
+        success: true,
+        meetupId,
+        venueName,
+        venueAddress,
+        midpointLat,
+        midpointLng,
+        safetyTips: [
+          "Meet in a public place",
+          "Share your live location with a trusted contact",
+          "Use in-app check-in before and after meetup"
+        ]
+      });
+    } catch (error) {
+      console.error("Meet-now suggestion error:", error);
+      return res.status(500).json({ error: "Failed to suggest meetup" });
+    }
+  });
+  app2.post("/api/explorex/journey/log", async (req, res) => {
+    try {
+      if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
+      const { userAId, userBId, title, summary, city, metAt } = req.body || {};
+      if (!userAId || !userBId || !summary) {
+        return res.status(400).json({ error: "userAId, userBId and summary are required" });
+      }
+      const result = await pgPool.query(
+        `INSERT INTO explorex_journey_entries (user_a_id, user_b_id, title, summary, city, met_at)
+         VALUES ($1,$2,$3,$4,$5,$6)
+         RETURNING id, user_a_id, user_b_id, title, summary, city, met_at, created_at`,
+        [userAId, userBId, title || null, summary, city || null, metAt ? new Date(metAt) : /* @__PURE__ */ new Date()]
+      );
+      await pgPool.query(
+        `UPDATE explorex_meetups
+         SET status='completed', completed_at = NOW()
+         WHERE (user_a_id = $1 AND user_b_id = $2) OR (user_a_id = $2 AND user_b_id = $1)`,
+        [userAId, userBId]
+      );
+      return res.json(result.rows[0]);
+    } catch (error) {
+      console.error("Journey log error:", error);
+      return res.status(500).json({ error: "Failed to log journey" });
+    }
+  });
+  app2.get("/api/explorex/journey/:userId", async (req, res) => {
+    try {
+      if (!pgPool) return res.json([]);
+      const userId = req.params.userId;
+      const rows = await pgPool.query(
+        `SELECT id, user_a_id, user_b_id, title, summary, city, met_at, created_at
+         FROM explorex_journey_entries
+         WHERE user_a_id = $1 OR user_b_id = $1
+         ORDER BY created_at DESC
+         LIMIT 50`,
+        [userId]
+      );
+      return res.json(rows.rows);
+    } catch (error) {
+      console.error("Journey list error:", error);
+      return res.json([]);
+    }
+  });
+  app2.get("/api/explorex/serendipity/:userId", async (req, res) => {
+    try {
+      const userId = req.params.userId;
+      if (!userId) return res.status(400).json({ error: "User ID is required" });
+      const today = getDayKey();
+      if (pgPool) {
+        const existing = await pgPool.query(
+          `SELECT target_user_id FROM explorex_daily_serendipity WHERE user_id = $1 AND day_key = $2 LIMIT 1`,
+          [userId, today]
+        );
+        if (existing.rowCount) {
+          return res.json({ success: true, targetUserId: existing.rows[0].target_user_id, cached: true });
+        }
+      }
+      const sb = getSupabase();
+      const { data: profiles } = await sb.from("user_profiles").select("id").neq("id", userId).limit(50);
+      const target = (profiles || [])[Math.floor(Math.random() * Math.max(1, (profiles || []).length))];
+      if (!target?.id) {
+        return res.json({ success: false, error: "No candidate found" });
+      }
+      if (pgPool) {
+        await pgPool.query(
+          `INSERT INTO explorex_daily_serendipity (user_id, day_key, target_user_id)
+           VALUES ($1,$2,$3)
+           ON CONFLICT (user_id, day_key) DO NOTHING`,
+          [userId, today, target.id]
+        );
+      }
+      return res.json({ success: true, targetUserId: target.id, cached: false });
+    } catch (error) {
+      console.error("Serendipity error:", error);
+      return res.status(500).json({ error: "Failed to fetch serendipity" });
+    }
+  });
+  app2.get("/api/explorex/city-capsule/:city", async (req, res) => {
+    try {
+      const city = String(req.params.city || "").trim();
+      if (!city) return res.status(400).json({ error: "City is required" });
+      const sb = getSupabase();
+      const { data: peopleRows } = await sb.from("user_profiles").select("id, name, is_travel_verified, location").ilike("location", `%${city}%`).limit(100);
+      const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+      const { data: activityRows } = await sb.from("activities").select("id, title, date, location, category").ilike("location", `%${city}%`).gte("date", nowIso).order("date", { ascending: true }).limit(20);
+      return res.json({
+        city,
+        activeExplorers: (peopleRows || []).length,
+        verifiedExplorers: (peopleRows || []).filter((p) => p.is_travel_verified).length,
+        upcomingActivities: activityRows || [],
+        trendingIntents: ["explore_city", "coffee_now", "adventure_partner"]
+      });
+    } catch (error) {
+      console.error("City capsule error:", error);
+      return res.status(500).json({ error: "Failed to fetch city capsule" });
     }
   });
   const COMPATIBILITY_LIMITS = {
@@ -1316,6 +1947,137 @@ ${vanDetails}` }
     try {
       const { userAId, userBId, userAProfile, userBProfile, tier } = req.body;
       if (!userAId || !userBId) return res.status(400).json({ error: "Both user IDs are required" });
+      if (pgPool) {
+        const profileRes = await pgPool.query(`SELECT * FROM user_profiles WHERE id = $1 LIMIT 1`, [userAId]);
+        let profile2 = profileRes.rows[0];
+        if (!profile2) {
+          const now = Date.now();
+          await pgPool.query(
+            `INSERT INTO user_profiles (
+              id, name, age, bio, interests, photos, location,
+              compatibility_checks_this_week, radar_scans_this_week, last_reset_timestamp,
+              is_visible_on_radar, created_at, updated_at
+            ) VALUES (
+              $1, $2, $3, $4, $5::jsonb, $6::jsonb, $7,
+              0, 0, $8, TRUE, NOW(), NOW()
+            )`,
+            [
+              userAId,
+              userAProfile?.name || "",
+              userAProfile?.age || 0,
+              userAProfile?.bio || "",
+              JSON.stringify(userAProfile?.interests || []),
+              JSON.stringify(userAProfile?.photos || []),
+              userAProfile?.location || "",
+              now
+            ]
+          );
+          const fresh = await pgPool.query(`SELECT * FROM user_profiles WHERE id = $1 LIMIT 1`, [userAId]);
+          profile2 = fresh.rows[0];
+        }
+        if (!profile2) {
+          return res.status(500).json({ error: "Failed to get or create profile" });
+        }
+        if (shouldResetDaily(Number(profile2.last_reset_timestamp) || 0)) {
+          await pgPool.query(
+            `UPDATE user_profiles
+             SET compatibility_checks_this_week = 0,
+                 radar_scans_this_week = 0,
+                 last_reset_timestamp = $2,
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [userAId, Date.now()]
+          );
+          profile2.compatibility_checks_this_week = 0;
+        }
+        const currentTier2 = tier || "starter";
+        const limit2 = COMPATIBILITY_LIMITS[currentTier2] ?? 2;
+        if (limit2 !== -1 && (profile2.compatibility_checks_this_week || 0) >= limit2) {
+          return res.status(403).json({
+            error: "Daily compatibility check limit reached",
+            limit: limit2,
+            used: profile2.compatibility_checks_this_week,
+            tier: currentTier2,
+            requiresUpgrade: true
+          });
+        }
+        const oneDayAgo2 = new Date(Date.now() - 24 * 60 * 60 * 1e3).toISOString();
+        const existingRes = await pgPool.query(
+          `SELECT * FROM compatibility_history
+           WHERE ((user_a = $1 AND user_b = $2) OR (user_a = $2 AND user_b = $1))
+             AND created_at >= $3
+           ORDER BY created_at DESC
+           LIMIT 1`,
+          [userAId, userBId, oneDayAgo2]
+        );
+        if (Number(existingRes.rowCount || 0) > 0) {
+          return res.json({ result: existingRes.rows[0], cached: true });
+        }
+        const profileA2 = userAProfile || { name: "User A", interests: [], bio: "" };
+        const profileB2 = userBProfile || { name: "User B", interests: [], bio: "" };
+        const compatPrompt2 = `You are a compatibility analyzer for a travel/nomad dating app. Analyze these two profiles and return ONLY valid JSON (no markdown, no explanation).
+
+Profile A: Name: ${profileA2.name}, Age: ${profileA2.age || "unknown"}, Bio: "${profileA2.bio || "No bio"}", Interests: ${JSON.stringify(profileA2.interests || [])}, Location: "${profileA2.location || "unknown"}"
+
+Profile B: Name: ${profileB2.name}, Age: ${profileB2.age || "unknown"}, Bio: "${profileB2.bio || "No bio"}", Interests: ${JSON.stringify(profileB2.interests || [])}, Location: "${profileB2.location || "unknown"}"
+
+Return ONLY this JSON structure:
+{"score":75,"strengths":["shared interest 1","shared interest 2"],"conflicts":["potential conflict 1"],"icebreakers":["conversation starter 1","conversation starter 2"],"first_message":"Hey! I noticed we both...","date_idea":"A cool activity idea based on shared interests"}`;
+        const aiReply2 = await callGroqChat([
+          { role: "system", content: "You are a compatibility analyzer. Return ONLY valid JSON. No markdown code blocks." },
+          { role: "user", content: compatPrompt2 }
+        ]);
+        let compatResult2;
+        try {
+          const cleaned = aiReply2.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+          compatResult2 = JSON.parse(cleaned);
+        } catch {
+          compatResult2 = {
+            score: 65,
+            strengths: ["Both enjoy travel and adventure"],
+            conflicts: ["May have different travel paces"],
+            icebreakers: ["What's your favorite travel destination?"],
+            first_message: "Hey! Looks like we're both on the road!",
+            date_idea: "Explore a new hiking trail together"
+          };
+        }
+        const compatId2 = `compat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const nowIso2 = (/* @__PURE__ */ new Date()).toISOString();
+        await pgPool.query(
+          `INSERT INTO compatibility_history (
+             id, user_a, user_b, score, strengths, conflicts, icebreakers, first_message, date_idea, created_at
+           ) VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7::jsonb,$8,$9,$10)`,
+          [
+            compatId2,
+            userAId,
+            userBId,
+            compatResult2.score,
+            JSON.stringify(compatResult2.strengths || []),
+            JSON.stringify(compatResult2.conflicts || []),
+            JSON.stringify(compatResult2.icebreakers || []),
+            compatResult2.first_message || null,
+            compatResult2.date_idea || null,
+            nowIso2
+          ]
+        );
+        await pgPool.query(
+          `UPDATE user_profiles
+           SET compatibility_checks_this_week = COALESCE(compatibility_checks_this_week, 0) + 1,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [userAId]
+        );
+        return res.json({
+          result: {
+            id: compatId2,
+            user_a: userAId,
+            user_b: userBId,
+            ...compatResult2,
+            created_at: nowIso2
+          },
+          cached: false
+        });
+      }
       const sb = getSupabase();
       const { data: profileData, error: profileError } = await sb.from("user_profiles").select("*").eq("id", userAId).single();
       let profile = profileData;
@@ -1430,8 +2192,18 @@ Return ONLY this JSON structure:
   });
   app2.get("/api/compatibility/history/:userId", async (req, res) => {
     try {
-      const sb = getSupabase();
       const userId = req.params.userId;
+      if (pgPool) {
+        const result = await pgPool.query(
+          `SELECT * FROM compatibility_history
+           WHERE user_a = $1 OR user_b = $1
+           ORDER BY created_at DESC
+           LIMIT 20`,
+          [userId]
+        );
+        return res.json(result.rows || []);
+      }
+      const sb = getSupabase();
       const { data: dataA } = await sb.from("compatibility_history").select("*").eq("user_a", userId).order("created_at", { ascending: false }).limit(20);
       const { data: dataB } = await sb.from("compatibility_history").select("*").eq("user_b", userId).order("created_at", { ascending: false }).limit(20);
       const combined = [...dataA || [], ...dataB || []].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, 20);
@@ -1456,8 +2228,17 @@ Return ONLY this JSON structure:
       if (!userId || lat === void 0 || lng === void 0) {
         return res.status(400).json({ error: "userId, lat, and lng are required" });
       }
-      const sb = getSupabase();
       const now = (/* @__PURE__ */ new Date()).toISOString();
+      if (pgPool) {
+        await pgPool.query(
+          `INSERT INTO user_locations (user_id, lat, lng, updated_at)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (user_id) DO UPDATE SET lat = EXCLUDED.lat, lng = EXCLUDED.lng, updated_at = EXCLUDED.updated_at`,
+          [userId, Number(lat), Number(lng), now]
+        );
+        return res.json({ success: true });
+      }
+      const sb = getSupabase();
       const { data: existing } = await sb.from("user_locations").select("user_id").eq("user_id", userId);
       if (existing && existing.length > 0) {
         await sb.from("user_locations").update({ lat, lng, updated_at: now }).eq("user_id", userId);
@@ -1475,6 +2256,155 @@ Return ONLY this JSON structure:
       const { userId, lat, lng, radiusKm, tier } = req.body;
       if (!userId || lat === void 0 || lng === void 0) {
         return res.status(400).json({ error: "userId, lat, and lng are required" });
+      }
+      if (pgPool) {
+        const profileRes = await pgPool.query(`SELECT * FROM user_profiles WHERE id = $1 LIMIT 1`, [userId]);
+        let profile2 = profileRes.rows[0];
+        if (!profile2) {
+          const nowMs = Date.now();
+          await pgPool.query(
+            `INSERT INTO user_profiles (
+              id, name, compatibility_checks_this_week, radar_scans_this_week, last_reset_timestamp,
+              is_visible_on_radar, created_at, updated_at
+            ) VALUES ($1, '', 0, 0, $2, TRUE, NOW(), NOW())`,
+            [userId, nowMs]
+          );
+          const fresh = await pgPool.query(`SELECT * FROM user_profiles WHERE id = $1 LIMIT 1`, [userId]);
+          profile2 = fresh.rows[0];
+        }
+        if (!profile2) {
+          return res.status(500).json({ error: "Failed to get or create profile" });
+        }
+        if (shouldResetDaily(Number(profile2.last_reset_timestamp) || 0)) {
+          await pgPool.query(
+            `UPDATE user_profiles
+             SET compatibility_checks_this_week = 0,
+                 radar_scans_this_week = 0,
+                 last_reset_timestamp = $2,
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [userId, Date.now()]
+          );
+          profile2.radar_scans_this_week = 0;
+        }
+        const currentTier2 = tier || "starter";
+        const limit2 = RADAR_LIMITS[currentTier2] ?? 2;
+        if (limit2 !== -1 && (profile2.radar_scans_this_week || 0) >= limit2) {
+          return res.status(403).json({
+            error: "Daily radar scan limit reached",
+            limit: limit2,
+            used: profile2.radar_scans_this_week,
+            tier: currentTier2,
+            requiresUpgrade: true
+          });
+        }
+        const now2 = (/* @__PURE__ */ new Date()).toISOString();
+        await pgPool.query(
+          `INSERT INTO user_locations (user_id, lat, lng, updated_at)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (user_id) DO UPDATE SET lat = EXCLUDED.lat, lng = EXCLUDED.lng, updated_at = EXCLUDED.updated_at`,
+          [userId, Number(lat), Number(lng), now2]
+        );
+        const radius2 = Number(radiusKm) > 0 ? Number(radiusKm) : 75;
+        const safeCos2 = Math.max(Math.cos(lat * Math.PI / 180), 0.01);
+        const latDelta2 = radius2 / 111;
+        const lngDelta2 = radius2 / (111 * safeCos2);
+        const recentLocationThreshold2 = new Date(Date.now() - 7 * 24 * 60 * 60 * 1e3).toISOString();
+        const nearbyLocsRes = await pgPool.query(
+          `SELECT user_id, lat, lng, updated_at
+           FROM user_locations
+           WHERE user_id <> $1
+             AND lat BETWEEN $2 AND $3
+             AND lng BETWEEN $4 AND $5
+             AND updated_at >= $6
+           ORDER BY updated_at DESC
+           LIMIT 200`,
+          [userId, Number(lat) - latDelta2, Number(lat) + latDelta2, Number(lng) - lngDelta2, Number(lng) + lngDelta2, recentLocationThreshold2]
+        );
+        const nearbyLocs2 = nearbyLocsRes.rows || [];
+        const nearbyUserIds2 = nearbyLocs2.map((l) => String(l.user_id));
+        let profilesMap2 = {};
+        if (nearbyUserIds2.length > 0) {
+          const profilesRes = await pgPool.query(
+            `SELECT id, name, age, bio, interests, photos, location, is_visible_on_radar
+             FROM user_profiles
+             WHERE id = ANY($1::text[])`,
+            [nearbyUserIds2]
+          );
+          for (const p of profilesRes.rows) {
+            if (p.is_visible_on_radar === false) continue;
+            profilesMap2[String(p.id)] = p;
+          }
+        }
+        const nearbyUsers2 = nearbyLocs2.filter((loc) => profilesMap2[String(loc.user_id)]).map((row) => {
+          const rowLat = Number(row.lat);
+          const rowLng = Number(row.lng);
+          if (!Number.isFinite(rowLat) || !Number.isFinite(rowLng)) return null;
+          const dLat = (rowLat - Number(lat)) * Math.PI / 180;
+          const dLng = (rowLng - Number(lng)) * Math.PI / 180;
+          const a = Math.sin(dLat / 2) ** 2 + Math.cos(Number(lat) * Math.PI / 180) * Math.cos(rowLat * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+          const distance = 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+          const up = profilesMap2[String(row.user_id)];
+          return {
+            userId: String(row.user_id),
+            lat: rowLat,
+            lng: rowLng,
+            distance: Math.round(distance * 10) / 10,
+            name: up?.name || "Nomad",
+            age: up?.age,
+            bio: up?.bio,
+            interests: up?.interests || [],
+            photos: up?.photos || [],
+            location: up?.location,
+            lastSeen: row.updated_at
+          };
+        }).filter((u) => u && u.distance <= radius2).sort((a, b) => {
+          if (a.distance !== b.distance) return a.distance - b.distance;
+          return String(b.lastSeen || "").localeCompare(String(a.lastSeen || ""));
+        }).slice(0, 25);
+        const actNow2 = (/* @__PURE__ */ new Date()).toISOString();
+        const allActivitiesRes = await pgPool.query(
+          `SELECT * FROM activities WHERE date >= $1 ORDER BY date ASC LIMIT 50`,
+          [actNow2]
+        );
+        const allActivities2 = allActivitiesRes.rows || [];
+        const nearbyActivities2 = allActivities2.filter((act) => {
+          if (act.latitude === void 0 || act.longitude === void 0 || act.latitude === null || act.longitude === null) return false;
+          const aLat = Number(act.latitude);
+          const aLng = Number(act.longitude);
+          if (!Number.isFinite(aLat) || !Number.isFinite(aLng)) return false;
+          const dLat = (aLat - Number(lat)) * Math.PI / 180;
+          const dLng = (aLng - Number(lng)) * Math.PI / 180;
+          const a2 = Math.sin(dLat / 2) ** 2 + Math.cos(Number(lat) * Math.PI / 180) * Math.cos(aLat * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+          const dist = 6371 * 2 * Math.atan2(Math.sqrt(a2), Math.sqrt(1 - a2));
+          act._distance = Math.round(dist * 10) / 10;
+          return dist <= radius2;
+        }).slice(0, 10).map((act) => ({
+          id: act.id,
+          title: act.title,
+          description: act.description,
+          type: act.category || "other",
+          location: act.location,
+          date: act.date,
+          distance: act._distance,
+          attendeeCount: (act.attendee_ids || []).length,
+          maxAttendees: act.max_attendees ? parseInt(act.max_attendees) : void 0,
+          imageUrl: act.image_url,
+          hostId: act.host_id
+        }));
+        await pgPool.query(
+          `UPDATE user_profiles
+           SET radar_scans_this_week = COALESCE(radar_scans_this_week, 0) + 1,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [userId]
+        );
+        return res.json({
+          users: nearbyUsers2,
+          activities: nearbyActivities2,
+          scansUsed: (profile2.radar_scans_this_week || 0) + 1,
+          scansLimit: limit2
+        });
       }
       const sb = getSupabase();
       const { data: profileData } = await sb.from("user_profiles").select("*").eq("id", userId).single();
@@ -1523,11 +2453,12 @@ Return ONLY this JSON structure:
       } else {
         await sb.from("user_locations").insert({ user_id: userId, lat, lng, updated_at: now });
       }
-      const radius = radiusKm || 50;
+      const radius = Number(radiusKm) > 0 ? Number(radiusKm) : 75;
+      const safeCos = Math.max(Math.cos(lat * Math.PI / 180), 0.01);
       const latDelta = radius / 111;
-      const lngDelta = radius / (111 * Math.cos(lat * Math.PI / 180));
-      const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1e3).toISOString();
-      const { data: nearbyLocs } = await sb.from("user_locations").select("user_id, lat, lng, updated_at").neq("user_id", userId).gte("lat", lat - latDelta).lte("lat", lat + latDelta).gte("lng", lng - lngDelta).lte("lng", lng + lngDelta).gte("updated_at", oneDayAgo).limit(50);
+      const lngDelta = radius / (111 * safeCos);
+      const recentLocationThreshold = new Date(Date.now() - 7 * 24 * 60 * 60 * 1e3).toISOString();
+      const { data: nearbyLocs } = await sb.from("user_locations").select("user_id, lat, lng, updated_at").neq("user_id", userId).gte("lat", lat - latDelta).lte("lat", lat + latDelta).gte("lng", lng - lngDelta).lte("lng", lng + lngDelta).gte("updated_at", recentLocationThreshold).limit(200);
       const nearbyUserIds = (nearbyLocs || []).map((l) => l.user_id);
       let profilesMap = {};
       if (nearbyUserIds.length > 0) {
@@ -1545,10 +2476,13 @@ Return ONLY this JSON structure:
         const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat * Math.PI / 180) * Math.cos(row.lat * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
         const distance = 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
         const up = profilesMap[row.user_id];
+        const rowLat = Number(row.lat);
+        const rowLng = Number(row.lng);
+        if (!Number.isFinite(rowLat) || !Number.isFinite(rowLng)) return null;
         return {
           userId: row.user_id,
-          lat: row.lat,
-          lng: row.lng,
+          lat: rowLat,
+          lng: rowLng,
           distance: Math.round(distance * 10) / 10,
           name: up?.name || "Nomad",
           age: up?.age,
@@ -1558,7 +2492,10 @@ Return ONLY this JSON structure:
           location: up?.location,
           lastSeen: row.updated_at
         };
-      }).filter((u) => u.distance <= radius).sort((a, b) => a.distance - b.distance);
+      }).filter((u) => u && u.distance <= radius).sort((a, b) => {
+        if (a.distance !== b.distance) return a.distance - b.distance;
+        return String(b.lastSeen || "").localeCompare(String(a.lastSeen || ""));
+      }).slice(0, 25);
       const actNow = (/* @__PURE__ */ new Date()).toISOString();
       const { data: allActivities } = await sb.from("activities").select("*").gte("date", actNow).order("date", { ascending: true }).limit(50);
       const nearbyActivities = (allActivities || []).filter((act) => {
@@ -1602,6 +2539,10 @@ Return ONLY this JSON structure:
     try {
       const { userId, isVisible } = req.body;
       if (!userId) return res.status(400).json({ error: "userId is required" });
+      if (pgPool) {
+        await pgPool.query(`UPDATE user_profiles SET is_visible_on_radar = $2, updated_at = NOW() WHERE id = $1`, [userId, isVisible !== false]);
+        return res.json({ success: true, isVisible: isVisible !== false });
+      }
       const sb = getSupabase();
       await sb.from("user_profiles").update({ is_visible_on_radar: isVisible !== false }).eq("id", userId);
       res.json({ success: true, isVisible: isVisible !== false });
@@ -1618,6 +2559,31 @@ Return ONLY this JSON structure:
       }
       const id = `cr_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
       const nowStr = (/* @__PURE__ */ new Date()).toISOString();
+      if (pgPool) {
+        const existingRes = await pgPool.query(
+          `SELECT id, status FROM radar_chat_requests
+           WHERE ((sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1))
+             AND status IN ('pending', 'accepted')
+           ORDER BY created_at DESC
+           LIMIT 1`,
+          [senderId, receiverId]
+        );
+        if (Number(existingRes.rowCount || 0) > 0) {
+          const existing2 = existingRes.rows[0];
+          if (existing2.status === "accepted") {
+            return res.json({ alreadyConnected: true, requestId: existing2.id });
+          }
+          return res.json({ alreadyRequested: true, requestId: existing2.id });
+        }
+        await pgPool.query(
+          `INSERT INTO radar_chat_requests (
+             id, sender_id, receiver_id, sender_name, sender_photo, receiver_name, receiver_photo,
+             message, status, created_at, updated_at
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10)`,
+          [id, senderId, receiverId, senderName || "", senderPhoto || "", receiverName || "", receiverPhoto || "", message || "", nowStr, nowStr]
+        );
+        return res.json({ success: true, requestId: id });
+      }
       const sb = getSupabase();
       const { data: existing } = await sb.from("radar_chat_requests").select("id, status").or(`and(sender_id.eq.${senderId},receiver_id.eq.${receiverId}),and(sender_id.eq.${receiverId},receiver_id.eq.${senderId})`).in("status", ["pending", "accepted"]);
       if (existing && existing.length > 0) {
@@ -1650,6 +2616,24 @@ Return ONLY this JSON structure:
   app2.get("/api/radar/chat-requests/:userId", async (req, res) => {
     try {
       const userId = req.params.userId;
+      if (pgPool) {
+        const [receivedRes, sentRes] = await Promise.all([
+          pgPool.query(
+            `SELECT * FROM radar_chat_requests
+             WHERE receiver_id = $1 AND status = 'pending'
+             ORDER BY created_at DESC`,
+            [userId]
+          ),
+          pgPool.query(
+            `SELECT * FROM radar_chat_requests
+             WHERE sender_id = $1
+             ORDER BY created_at DESC
+             LIMIT 20`,
+            [userId]
+          )
+        ]);
+        return res.json({ received: receivedRes.rows || [], sent: sentRes.rows || [] });
+      }
       const sb = getSupabase();
       const { data: received } = await sb.from("radar_chat_requests").select("*").eq("receiver_id", userId).eq("status", "pending").order("created_at", { ascending: false });
       const { data: sent } = await sb.from("radar_chat_requests").select("*").eq("sender_id", userId).order("created_at", { ascending: false }).limit(20);
@@ -1666,6 +2650,29 @@ Return ONLY this JSON structure:
         return res.status(400).json({ error: "action must be 'accepted' or 'declined'" });
       }
       const requestId = req.params.requestId;
+      if (pgPool) {
+        await pgPool.query(
+          `UPDATE radar_chat_requests SET status = $2, updated_at = NOW() WHERE id = $1`,
+          [requestId, action]
+        );
+        if (action === "accepted") {
+          const reqRes = await pgPool.query(`SELECT * FROM radar_chat_requests WHERE id = $1 LIMIT 1`, [requestId]);
+          const request = reqRes.rows[0];
+          if (request) {
+            const sorted = [String(request.sender_id), String(request.receiver_id)].sort();
+            const userA = sorted[0];
+            const userB = sorted[1];
+            const matchId = `match_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+            await pgPool.query(
+              `INSERT INTO matches (id, user_a_id, user_b_id, created_at)
+               VALUES ($1,$2,$3,NOW())
+               ON CONFLICT (user_a_id, user_b_id) DO NOTHING`,
+              [matchId, userA, userB]
+            );
+          }
+        }
+        return res.json({ success: true, status: action });
+      }
       const sb = getSupabase();
       const { error } = await sb.from("radar_chat_requests").update({ status: action, updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", requestId);
       if (error) throw error;
@@ -1689,6 +2696,29 @@ Return ONLY this JSON structure:
   });
   app2.get("/api/usage/:userId", async (req, res) => {
     try {
+      if (pgPool) {
+        const result = await pgPool.query(`SELECT * FROM user_profiles WHERE id = $1 LIMIT 1`, [req.params.userId]);
+        const profile2 = result.rows[0];
+        if (!profile2) {
+          return res.json({ compatibilityChecks: 0, radarScans: 0 });
+        }
+        if (shouldResetDaily(Number(profile2.last_reset_timestamp) || 0)) {
+          await pgPool.query(
+            `UPDATE user_profiles
+             SET compatibility_checks_this_week = 0,
+                 radar_scans_this_week = 0,
+                 last_reset_timestamp = $2,
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [req.params.userId, Date.now()]
+          );
+          return res.json({ compatibilityChecks: 0, radarScans: 0 });
+        }
+        return res.json({
+          compatibilityChecks: profile2.compatibility_checks_this_week || 0,
+          radarScans: profile2.radar_scans_this_week || 0
+        });
+      }
       const sb = getSupabase();
       const { data, error } = await sb.from("user_profiles").select("*").eq("id", req.params.userId).single();
       if (error || !data) {
@@ -1863,6 +2893,53 @@ Badge assignment:
     try {
       const { userId } = req.params;
       if (!userId) return res.status(400).json({ error: "User ID is required" });
+      if (pgPool) {
+        const [swipedRes, matchRes, allProfilesRes] = await Promise.all([
+          pgPool.query(`SELECT swiped_id FROM swipes WHERE swiper_id = $1`, [userId]),
+          pgPool.query(`SELECT user_a_id, user_b_id FROM matches WHERE user_a_id = $1 OR user_b_id = $1`, [userId]),
+          pgPool.query(`SELECT * FROM user_profiles WHERE id <> $1 ORDER BY id`, [userId])
+        ]);
+        const swipedIds2 = swipedRes.rows.map((row) => String(row.swiped_id));
+        const matchedIds2 = matchRes.rows.map((row) => String(row.user_a_id) === userId ? String(row.user_b_id) : String(row.user_a_id));
+        const excludeIds2 = /* @__PURE__ */ new Set([userId, ...swipedIds2, ...matchedIds2]);
+        let filtered2 = allProfilesRes.rows.filter((row) => !excludeIds2.has(String(row.id)));
+        const realProfiles2 = filtered2.filter((p) => !String(p.id).startsWith("mock_"));
+        const mockProfiles2 = filtered2.filter((p) => String(p.id).startsWith("mock_"));
+        filtered2 = realProfiles2.length >= 15 ? realProfiles2 : [...realProfiles2, ...mockProfiles2];
+        for (let i = filtered2.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [filtered2[i], filtered2[j]] = [filtered2[j], filtered2[i]];
+        }
+        filtered2 = filtered2.slice(0, 30);
+        const meta2 = await loadExploreXMetaForUsers(filtered2.map((row) => String(row.id)));
+        const profiles2 = filtered2.map((row) => {
+          const enriched = addExploreXProfileFields(row, meta2);
+          return {
+            user: {
+              id: enriched.id,
+              email: enriched.email || "",
+              name: enriched.name || "Nomad",
+              age: enriched.age || 25,
+              bio: enriched.bio || "",
+              location: enriched.location || "On the road",
+              photos: enriched.photos || [],
+              interests: enriched.interests || [],
+              vanType: enriched.van_type || void 0,
+              travelStyle: enriched.travel_style || void 0,
+              isTravelVerified: enriched.is_travel_verified || false,
+              travelBadge: enriched.travel_badge || "none",
+              intentMode: enriched.intent_mode || "explore_city",
+              activePlan: enriched.active_plan || null,
+              trustScore: Number(enriched.trust_score || 0),
+              meetupCount: Number(enriched.meetup_count || 0),
+              createdAt: enriched.created_at || (/* @__PURE__ */ new Date()).toISOString(),
+              isMock: String(enriched.id).startsWith("mock_")
+            },
+            distance: Math.floor(Math.random() * 50) + 1
+          };
+        });
+        return res.json(profiles2);
+      }
       const sb = getSupabase();
       const { data: swipedData } = await sb.from("swipes").select("swiped_id").eq("swiper_id", userId);
       const swipedIds = (swipedData || []).map((s) => s.swiped_id);
@@ -1889,25 +2966,33 @@ Badge assignment:
         [filtered[i], filtered[j]] = [filtered[j], filtered[i]];
       }
       filtered = filtered.slice(0, 30);
-      const profiles = filtered.map((row) => ({
-        user: {
-          id: row.id,
-          email: row.email || "",
-          name: row.name || "Nomad",
-          age: row.age || 25,
-          bio: row.bio || "",
-          location: row.location || "On the road",
-          photos: row.photos || [],
-          interests: row.interests || [],
-          vanType: row.van_type || void 0,
-          travelStyle: row.travel_style || void 0,
-          isTravelVerified: row.is_travel_verified || false,
-          travelBadge: row.travel_badge || "none",
-          createdAt: row.created_at || (/* @__PURE__ */ new Date()).toISOString(),
-          isMock: row.id.startsWith("mock_")
-        },
-        distance: Math.floor(Math.random() * 50) + 1
-      }));
+      const meta = await loadExploreXMetaForUsers((filtered || []).map((row) => String(row.id)));
+      const profiles = filtered.map((row) => {
+        const enriched = addExploreXProfileFields(row, meta);
+        return {
+          user: {
+            id: enriched.id,
+            email: enriched.email || "",
+            name: enriched.name || "Nomad",
+            age: enriched.age || 25,
+            bio: enriched.bio || "",
+            location: enriched.location || "On the road",
+            photos: enriched.photos || [],
+            interests: enriched.interests || [],
+            vanType: enriched.van_type || void 0,
+            travelStyle: enriched.travel_style || void 0,
+            isTravelVerified: enriched.is_travel_verified || false,
+            travelBadge: enriched.travel_badge || "none",
+            intentMode: enriched.intent_mode || "explore_city",
+            activePlan: enriched.active_plan || null,
+            trustScore: Number(enriched.trust_score || 0),
+            meetupCount: Number(enriched.meetup_count || 0),
+            createdAt: enriched.created_at || (/* @__PURE__ */ new Date()).toISOString(),
+            isMock: String(enriched.id).startsWith("mock_")
+          },
+          distance: Math.floor(Math.random() * 50) + 1
+        };
+      });
       res.json(profiles);
     } catch (error) {
       console.error("Discover profiles error:", error);
@@ -1920,8 +3005,66 @@ Badge assignment:
       if (!swiperId || !swipedId || !direction) {
         return res.status(400).json({ error: "swiperId, swipedId, and direction are required" });
       }
-      const sb = getSupabase();
       const now = (/* @__PURE__ */ new Date()).toISOString();
+      if (pgPool) {
+        await pgPool.query(
+          `INSERT INTO swipes (id, swiper_id, swiped_id, direction, created_at)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (swiper_id, swiped_id)
+           DO UPDATE SET direction = EXCLUDED.direction, created_at = EXCLUDED.created_at`,
+          [`swipe_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, swiperId, swipedId, direction, now]
+        );
+        let match2 = null;
+        if (direction === "right") {
+          const reverseSwipe = await pgPool.query(
+            `SELECT id FROM swipes WHERE swiper_id = $1 AND swiped_id = $2 AND direction = 'right' LIMIT 1`,
+            [swipedId, swiperId]
+          );
+          const shouldInstantMatch = String(swipedId).startsWith("mock_") || Number(reverseSwipe.rowCount || 0) > 0;
+          if (shouldInstantMatch) {
+            const sorted = [String(swiperId), String(swipedId)].sort();
+            const userA = sorted[0];
+            const userB = sorted[1];
+            const matchId = `match_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            const existing = await pgPool.query(`SELECT id FROM matches WHERE user_a_id = $1 AND user_b_id = $2 LIMIT 1`, [userA, userB]);
+            const finalMatchId = Number(existing.rowCount || 0) ? String(existing.rows[0].id) : matchId;
+            if (!Number(existing.rowCount || 0)) {
+              await pgPool.query(`INSERT INTO matches (id, user_a_id, user_b_id, created_at) VALUES ($1, $2, $3, $4)`, [finalMatchId, userA, userB, now]);
+            }
+            const profileRes = await pgPool.query(`SELECT * FROM user_profiles WHERE id = $1 LIMIT 1`, [swipedId]);
+            if (profileRes.rowCount) {
+              const meta = await loadExploreXMetaForUsers([String(swipedId)]);
+              const enriched = addExploreXProfileFields(profileRes.rows[0], meta);
+              match2 = {
+                id: finalMatchId,
+                matchedUserId: swipedId,
+                matchedUser: {
+                  id: enriched.id,
+                  email: enriched.email || "",
+                  name: enriched.name || "Nomad",
+                  age: enriched.age || 25,
+                  bio: enriched.bio || "",
+                  location: enriched.location || "On the road",
+                  photos: enriched.photos || [],
+                  interests: enriched.interests || [],
+                  vanType: enriched.van_type || void 0,
+                  travelStyle: enriched.travel_style || void 0,
+                  isTravelVerified: enriched.is_travel_verified || false,
+                  travelBadge: enriched.travel_badge || "none",
+                  intentMode: enriched.intent_mode || "explore_city",
+                  activePlan: enriched.active_plan || null,
+                  trustScore: Number(enriched.trust_score || 0),
+                  meetupCount: Number(enriched.meetup_count || 0),
+                  createdAt: enriched.created_at || now
+                },
+                createdAt: now
+              };
+            }
+          }
+        }
+        return res.json({ success: true, match: match2 });
+      }
+      const sb = getSupabase();
       await sb.from("swipes").upsert({
         swiper_id: swiperId,
         swiped_id: swipedId,
@@ -2016,10 +3159,82 @@ Badge assignment:
     try {
       const { userId } = req.params;
       if (!userId) return res.status(400).json({ error: "User ID is required" });
+      if (pgPool) {
+        const matchesRes = await pgPool.query(
+          `SELECT id, user_a_id, user_b_id, created_at FROM matches
+           WHERE user_a_id = $1 OR user_b_id = $1
+           ORDER BY created_at DESC`,
+          [userId]
+        );
+        let allMatches2 = matchesRes.rows;
+        const twoHoursAgo2 = Date.now() - 2 * 60 * 60 * 1e3;
+        const staleIds = allMatches2.filter((m) => new Date(m.created_at).getTime() < twoHoursAgo2).map((m) => String(m.id));
+        if (staleIds.length > 0) {
+          const msgRes = await pgPool.query(
+            `SELECT DISTINCT match_id FROM chat_messages WHERE match_id = ANY($1::text[])`,
+            [staleIds]
+          );
+          const active = new Set(msgRes.rows.map((r) => String(r.match_id)));
+          allMatches2 = allMatches2.filter((m) => {
+            const isOld = new Date(m.created_at).getTime() < twoHoursAgo2;
+            return !isOld || active.has(String(m.id));
+          });
+        }
+        const matchedUserIds2 = allMatches2.map(
+          (m) => String(m.user_a_id) === userId ? String(m.user_b_id) : String(m.user_a_id)
+        );
+        let profilesMap2 = {};
+        if (matchedUserIds2.length > 0) {
+          const profRes = await pgPool.query(`SELECT * FROM user_profiles WHERE id = ANY($1::text[])`, [matchedUserIds2]);
+          profilesMap2 = Object.fromEntries(profRes.rows.map((r) => [String(r.id), r]));
+        }
+        const meta2 = await loadExploreXMetaForUsers(matchedUserIds2);
+        const matchList2 = allMatches2.map((m) => {
+          const matchedUserId = String(m.user_a_id) === userId ? String(m.user_b_id) : String(m.user_a_id);
+          const row = profilesMap2[matchedUserId] || { id: matchedUserId };
+          const enriched = addExploreXProfileFields(row, meta2);
+          return {
+            id: String(m.id),
+            matchedUserId,
+            matchedUser: {
+              id: matchedUserId,
+              email: enriched.email || "",
+              name: enriched.name || "Nomad",
+              age: enriched.age || 25,
+              bio: enriched.bio || "",
+              location: enriched.location || "On the road",
+              photos: enriched.photos || [],
+              interests: enriched.interests || [],
+              vanType: enriched.van_type || void 0,
+              travelStyle: enriched.travel_style || void 0,
+              isTravelVerified: enriched.is_travel_verified || false,
+              travelBadge: enriched.travel_badge || "none",
+              intentMode: enriched.intent_mode || "explore_city",
+              activePlan: enriched.active_plan || null,
+              trustScore: Number(enriched.trust_score || 0),
+              meetupCount: Number(enriched.meetup_count || 0),
+              createdAt: enriched.created_at || (/* @__PURE__ */ new Date()).toISOString()
+            },
+            createdAt: m.created_at || (/* @__PURE__ */ new Date()).toISOString()
+          };
+        });
+        return res.json(matchList2);
+      }
       const sb = getSupabase();
       const { data: matchesA } = await sb.from("matches").select("id, user_a_id, user_b_id, created_at").eq("user_a_id", userId).order("created_at", { ascending: false });
       const { data: matchesB } = await sb.from("matches").select("id, user_a_id, user_b_id, created_at").eq("user_b_id", userId).order("created_at", { ascending: false });
-      const allMatches = [...matchesA || [], ...matchesB || []].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      let allMatches = [...matchesA || [], ...matchesB || []].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1e3;
+      const staleCandidates = allMatches.filter((match) => new Date(match.created_at).getTime() < twoHoursAgo).map((match) => match.id);
+      if (staleCandidates.length > 0) {
+        const { data: existingMessages } = await sb.from("chat_messages").select("match_id").in("match_id", staleCandidates);
+        const activeMatchIds = new Set((existingMessages || []).map((row) => row.match_id));
+        allMatches = allMatches.filter((match) => {
+          const isOld = new Date(match.created_at).getTime() < twoHoursAgo;
+          if (!isOld) return true;
+          return activeMatchIds.has(match.id);
+        });
+      }
       const matchedUserIds = allMatches.map(
         (m) => m.user_a_id === userId ? m.user_b_id : m.user_a_id
       );
@@ -2032,25 +3247,31 @@ Badge assignment:
           }
         }
       }
+      const meta = await loadExploreXMetaForUsers(matchedUserIds);
       const matchList = allMatches.map((m) => {
         const matchedUserId = m.user_a_id === userId ? m.user_b_id : m.user_a_id;
         const row = profilesMap[matchedUserId] || {};
+        const enriched = addExploreXProfileFields({ ...row, id: matchedUserId }, meta);
         return {
           id: m.id,
           matchedUserId,
           matchedUser: {
             id: matchedUserId,
-            email: row.email || "",
-            name: row.name || "Nomad",
-            age: row.age || 25,
-            bio: row.bio || "",
-            location: row.location || "On the road",
-            photos: row.photos || [],
-            interests: row.interests || [],
-            vanType: row.van_type || void 0,
-            travelStyle: row.travel_style || void 0,
-            isTravelVerified: row.is_travel_verified || false,
-            travelBadge: row.travel_badge || "none",
+            email: enriched.email || "",
+            name: enriched.name || "Nomad",
+            age: enriched.age || 25,
+            bio: enriched.bio || "",
+            location: enriched.location || "On the road",
+            photos: enriched.photos || [],
+            interests: enriched.interests || [],
+            vanType: enriched.van_type || void 0,
+            travelStyle: enriched.travel_style || void 0,
+            isTravelVerified: enriched.is_travel_verified || false,
+            travelBadge: enriched.travel_badge || "none",
+            intentMode: enriched.intent_mode || "explore_city",
+            activePlan: enriched.active_plan || null,
+            trustScore: Number(enriched.trust_score || 0),
+            meetupCount: Number(enriched.meetup_count || 0),
             createdAt: (/* @__PURE__ */ new Date()).toISOString()
           },
           createdAt: m.created_at || (/* @__PURE__ */ new Date()).toISOString()
@@ -2065,6 +3286,33 @@ Badge assignment:
   app2.get("/api/swipes/liked/:userId", async (req, res) => {
     try {
       const { userId } = req.params;
+      if (pgPool) {
+        const swipesRes = await pgPool.query(
+          `SELECT swiped_id, created_at FROM swipes WHERE swiper_id = $1 AND direction = 'right' ORDER BY created_at DESC`,
+          [userId]
+        );
+        const swipedIds2 = swipesRes.rows.map((s) => String(s.swiped_id));
+        if (swipedIds2.length === 0) return res.json([]);
+        const matchRes = await pgPool.query(`SELECT user_a_id, user_b_id FROM matches WHERE user_a_id = $1 OR user_b_id = $1`, [userId]);
+        const matchedIds2 = new Set(matchRes.rows.map((m) => String(m.user_a_id) === userId ? String(m.user_b_id) : String(m.user_a_id)));
+        const filteredIds2 = swipedIds2.filter((id) => !matchedIds2.has(id));
+        if (filteredIds2.length === 0) return res.json([]);
+        const profilesRes = await pgPool.query(`SELECT * FROM user_profiles WHERE id = ANY($1::text[])`, [filteredIds2]);
+        const likedProfiles2 = profilesRes.rows.map((row) => ({
+          id: row.id,
+          email: row.email || "",
+          name: row.name || "Nomad",
+          age: row.age || 25,
+          bio: row.bio || "",
+          location: row.location || "On the road",
+          photos: row.photos || [],
+          interests: row.interests || [],
+          vanType: row.van_type || void 0,
+          travelStyle: row.travel_style || void 0,
+          createdAt: row.created_at || (/* @__PURE__ */ new Date()).toISOString()
+        }));
+        return res.json(likedProfiles2);
+      }
       const sb = getSupabase();
       const { data: swipes } = await sb.from("swipes").select("swiped_id, created_at").eq("swiper_id", userId).eq("direction", "right").order("created_at", { ascending: false });
       if (!swipes || swipes.length === 0) {
@@ -2133,6 +3381,10 @@ Badge assignment:
     try {
       const { userId } = req.params;
       if (!userId) return res.status(400).json({ error: "User ID required" });
+      if (pgPool) {
+        await pgPool.query(`DELETE FROM swipes WHERE swiper_id = $1`, [userId]);
+        return res.json({ message: "Swipes reset successfully" });
+      }
       const sb = getSupabase();
       await sb.from("swipes").delete().eq("swiper_id", userId);
       res.json({ message: "Swipes reset successfully" });
@@ -2448,6 +3700,13 @@ Scoring rules:
   app2.get("/api/messages/:matchId", async (req, res) => {
     const { matchId } = req.params;
     try {
+      if (pgPool) {
+        const result = await pgPool.query(
+          `SELECT * FROM chat_messages WHERE match_id = $1 ORDER BY created_at ASC`,
+          [matchId]
+        );
+        return res.json(result.rows || []);
+      }
       const sb = getSupabase();
       const { data, error } = await sb.from("chat_messages").select("*").eq("match_id", matchId).order("created_at", { ascending: true });
       if (error) throw error;
@@ -2463,6 +3722,33 @@ Scoring rules:
     const msgId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
     const now = (/* @__PURE__ */ new Date()).toISOString();
     try {
+      if (pgPool) {
+        const result = await pgPool.query(
+          `INSERT INTO chat_messages (
+             id, match_id, sender_id, content, type, photo_url, file_url, file_name,
+             audio_url, audio_duration, reply_to, location, reactions, status, created_at
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14,$15)
+           RETURNING *`,
+          [
+            msgId,
+            matchId,
+            senderId,
+            content || "",
+            type || "text",
+            photoUrl || null,
+            fileUrl || null,
+            fileName || null,
+            audioUrl || null,
+            audioDuration || null,
+            replyTo ? JSON.stringify(replyTo) : null,
+            location ? JSON.stringify(location) : null,
+            JSON.stringify({}),
+            "sent",
+            now
+          ]
+        );
+        return res.status(201).json(result.rows[0]);
+      }
       const sb = getSupabase();
       const { data, error } = await sb.from("chat_messages").insert({
         id: msgId,
@@ -2492,6 +3778,16 @@ Scoring rules:
     const { messageId } = req.params;
     const { content } = req.body;
     try {
+      if (pgPool) {
+        const result = await pgPool.query(
+          `UPDATE chat_messages SET content = $1, edited_at = NOW() WHERE id = $2 RETURNING *`,
+          [content, messageId]
+        );
+        if (!result.rowCount) {
+          return res.status(404).json({ error: "Message not found" });
+        }
+        return res.json(result.rows[0]);
+      }
       const sb = getSupabase();
       const { data, error } = await sb.from("chat_messages").update({ content, edited_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", messageId).select().single();
       if (error) {
@@ -2509,6 +3805,13 @@ Scoring rules:
   app2.delete("/api/messages/:messageId", async (req, res) => {
     const { messageId } = req.params;
     try {
+      if (pgPool) {
+        const result = await pgPool.query(`DELETE FROM chat_messages WHERE id = $1 RETURNING id`, [messageId]);
+        if (!result.rowCount) {
+          return res.status(404).json({ error: "Message not found" });
+        }
+        return res.json({ success: true });
+      }
       const sb = getSupabase();
       const { data, error } = await sb.from("chat_messages").delete().eq("id", messageId).select("id");
       if (error) throw error;
@@ -2528,6 +3831,26 @@ Scoring rules:
       return res.status(400).json({ error: "userId and emoji are required" });
     }
     try {
+      if (pgPool) {
+        const msgRes = await pgPool.query(`SELECT reactions FROM chat_messages WHERE id = $1 LIMIT 1`, [messageId]);
+        if (!msgRes.rowCount) {
+          return res.status(404).json({ error: "Message not found" });
+        }
+        const reactions2 = msgRes.rows[0].reactions || {};
+        const current2 = new Set(reactions2[emoji] || []);
+        if (current2.has(userId)) {
+          current2.delete(userId);
+        } else {
+          current2.add(userId);
+        }
+        if (current2.size === 0) {
+          delete reactions2[emoji];
+        } else {
+          reactions2[emoji] = Array.from(current2);
+        }
+        await pgPool.query(`UPDATE chat_messages SET reactions = $1::jsonb WHERE id = $2`, [JSON.stringify(reactions2), messageId]);
+        return res.json({ id: messageId, reactions: reactions2 });
+      }
       const sb = getSupabase();
       const { data: msgData, error: getError } = await sb.from("chat_messages").select("reactions").eq("id", messageId).single();
       if (getError) {
@@ -2638,7 +3961,7 @@ Scoring rules:
 }
 
 // server/index.ts
-import * as fs from "fs";
+import * as fs2 from "fs";
 import * as path2 from "path";
 var app = express();
 var log = console.log;
@@ -2708,7 +4031,7 @@ function setupRequestLogging(app2) {
 function getAppName() {
   try {
     const appJsonPath = path2.resolve(process.cwd(), "app.json");
-    const appJsonContent = fs.readFileSync(appJsonPath, "utf-8");
+    const appJsonContent = fs2.readFileSync(appJsonPath, "utf-8");
     const appJson = JSON.parse(appJsonContent);
     return appJson.expo?.name || "App Landing Page";
   } catch {
@@ -2722,13 +4045,13 @@ function serveExpoManifest(platform, res) {
     platform,
     "manifest.json"
   );
-  if (!fs.existsSync(manifestPath)) {
+  if (!fs2.existsSync(manifestPath)) {
     return res.status(404).json({ error: `Manifest not found for platform: ${platform}` });
   }
   res.setHeader("expo-protocol-version", "1");
   res.setHeader("expo-sfv-version", "0");
   res.setHeader("content-type", "application/json");
-  const manifest = fs.readFileSync(manifestPath, "utf-8");
+  const manifest = fs2.readFileSync(manifestPath, "utf-8");
   res.send(manifest);
 }
 function serveLandingPage({
@@ -2756,7 +4079,7 @@ function configureExpoAndLanding(app2) {
     "templates",
     "landing-page.html"
   );
-  const landingPageTemplate = fs.readFileSync(templatePath, "utf-8");
+  const landingPageTemplate = fs2.readFileSync(templatePath, "utf-8");
   const appName = getAppName();
   log("Serving static Expo files with dynamic manifest routing");
   app2.use((req, res, next) => {
@@ -2781,6 +4104,7 @@ function configureExpoAndLanding(app2) {
     next();
   });
   app2.use("/assets", express.static(path2.resolve(process.cwd(), "assets")));
+  app2.use("/uploads", express.static(path2.resolve(process.cwd(), "uploads")));
   app2.use(express.static(path2.resolve(process.cwd(), "static-build")));
   log("Expo routing: Checking expo-platform header on / and /manifest");
 }

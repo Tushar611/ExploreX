@@ -343,7 +343,7 @@ export default function ActivitiesScreen() {
     
     try {
       const result = await Share.share({
-        message: `Join me for "${selectedActivity.title}" on Nomad Connect!\n\n${selectedActivity.location}\n${formatDate(selectedActivity.date)}\n\n${selectedActivity.description}\n\nDownload Nomad Connect to join: https://nomadconnect.app`,
+        message: `Join me for "${selectedActivity.title}" on ExploreX!\n\n${selectedActivity.location}\n${formatDate(selectedActivity.date)}\n\n${selectedActivity.description}\n\nDownload ExploreX to join: https://explorex.app`,
         title: `Join ${selectedActivity.title}`,
       });
 

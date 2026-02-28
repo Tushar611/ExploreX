@@ -51,7 +51,7 @@ const TIERS: TierConfig[] = [
     gradient: ['#FF8C42', '#F97316', '#EA580C'],
     glowColor: '#FF8C42',
     popular: true,
-    tagline: 'For serious nomads',
+    tagline: 'Best value in India',
     packageId: 'explorer_monthly',
   },
   {
@@ -60,7 +60,7 @@ const TIERS: TierConfig[] = [
     iconName: 'diamond-outline',
     gradient: ['#A78BFA', '#8B5CF6', '#7C3AED'],
     glowColor: '#8B5CF6',
-    tagline: 'The ultimate experience',
+    tagline: 'Unlimited premium access',
     packageId: 'adventurer_monthly',
   },
   {
@@ -69,7 +69,7 @@ const TIERS: TierConfig[] = [
     iconName: 'infinite-outline',
     gradient: ['#F59E0B', '#D97706', '#B45309'],
     glowColor: '#F59E0B',
-    tagline: 'Unlimited forever',
+    tagline: 'One-time payment, lifetime access',
     packageId: 'lifetime',
   },
 ];

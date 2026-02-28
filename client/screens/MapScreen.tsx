@@ -215,7 +215,7 @@ export default function MapScreen({ visible = true, onClose, initialFilter = "al
           const response = await fetch(url, {
             headers: {
               Accept: "application/json",
-              "User-Agent": "NomadConnect/1.0 (hackathon)",
+              "User-Agent": "ExploreX/1.0 (hackathon)",
             },
           });
           if (!response.ok) continue;
@@ -418,7 +418,7 @@ export default function MapScreen({ visible = true, onClose, initialFilter = "al
         const response = await fetch(url, {
           headers: {
             "Accept": "application/json",
-            "User-Agent": "NomadConnect/1.0 (hackathon)",
+            "User-Agent": "ExploreX/1.0 (hackathon)",
           },
           signal: abortRef.current.signal,
         });

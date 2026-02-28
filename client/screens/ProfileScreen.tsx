@@ -35,6 +35,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { TravelBadgeDisplay } from "@/components/TravelBadge";
 import { useSubscription } from "@/context/SubscriptionContext";
 import { Ionicons } from "@expo/vector-icons";
+import type { IntentMode } from "@/types";
 
 const INTERESTS = [
   "Hiking",
@@ -63,6 +64,13 @@ const VAN_TYPES = [
   "Skoolie",
   "Truck Camper",
   "Other",
+];
+
+const INTENT_MODE_OPTIONS: { value: IntentMode; label: string; icon: string; description: string }[] = [
+  { value: "coffee_now", label: "Coffee Now", icon: "compass", description: "Open for quick, nearby meets" },
+  { value: "explore_city", label: "Explore City", icon: "map", description: "Discover places and events together" },
+  { value: "adventure_partner", label: "Adventure Partner", icon: "navigation", description: "Find activity-first travel companions" },
+  { value: "deep_talk", label: "Deep Talk", icon: "message-square", description: "Prefer meaningful conversations" },
 ];
 
 const LOOKING_FOR_OPTIONS: { value: string; label: string; icon: string }[] = [
@@ -105,6 +113,9 @@ export default function ProfileScreen() {
     vanType: user?.vanType || "",
     interests: user?.interests || [],
     lookingFor: user?.lookingFor || [],
+    intentMode: (user?.intentMode || "explore_city") as IntentMode,
+    planTitle: user?.activePlan?.title || "",
+    planCity: user?.activePlan?.city || "",
   });
   
   const [showSafetyModal, setShowSafetyModal] = useState(false);
@@ -115,6 +126,22 @@ export default function ProfileScreen() {
     phone: user?.emergencyContact?.phone || "",
     policeHelpline: (user?.emergencyContact as any)?.policeHelpline || "",
   });
+
+  useEffect(() => {
+    setEditData((prev) => ({
+      ...prev,
+      name: user?.name || "",
+      bio: user?.bio || "",
+      location: user?.location || "",
+      age: user?.age?.toString() || "25",
+      vanType: user?.vanType || "",
+      interests: user?.interests || [],
+      lookingFor: user?.lookingFor || [],
+      intentMode: (user?.intentMode || "explore_city") as IntentMode,
+      planTitle: user?.activePlan?.title || "",
+      planCity: user?.activePlan?.city || "",
+    }));
+  }, [user]);
 
   const handleLogout = () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
@@ -189,6 +216,16 @@ export default function ProfileScreen() {
         vanType: editData.vanType,
         interests: editData.interests,
         lookingFor: editData.lookingFor,
+        intentMode: editData.intentMode,
+        activePlan: editData.planTitle.trim()
+          ? {
+              id: user?.activePlan?.id || `plan_${Date.now()}`,
+              title: editData.planTitle.trim(),
+              city: editData.planCity.trim() || undefined,
+              startsAt: new Date().toISOString(),
+              isActive: true,
+            }
+          : null,
       });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setShowEditModal(false);
@@ -258,8 +295,8 @@ export default function ProfileScreen() {
     
     try {
       await Share.share({
-        message: `Join me on Nomad Connect - the community app for van lifers and nomads!\n\nConnect with fellow travelers, find adventure buddies, join activities, and get expert van build advice.\n\nDownload now: https://nomadconnect.app`,
-        title: "Invite to Nomad Connect",
+        message: `Join me on ExploreX - the community app for van lifers and nomads!\n\nConnect with fellow travelers, find adventure buddies, and join activities wherever you go.\n\nDownload now: https://explorex.app`,
+        title: "Invite to ExploreX",
       });
     } catch (error) {
       console.error("Error sharing:", error);
@@ -329,6 +366,68 @@ export default function ProfileScreen() {
             </View>
           ) : null}
 
+        </Animated.View>
+
+        <Animated.View entering={FadeInDown.delay(170).springify()}>
+          <View style={[styles.section, { backgroundColor: theme.cardBackground }, Shadows.small]}>
+            <ThemedText type="h4" style={styles.sectionTitle}>
+              Connection Signal
+            </ThemedText>
+
+            <View style={styles.intentHeaderRow}>
+              <View style={[styles.metricBadge, { backgroundColor: theme.primary + "1F" }]}>
+                <Icon name="shield" size={16} color={theme.primary} />
+                <ThemedText type="small" style={{ color: theme.primary, fontWeight: "700" }}>
+                  Trust Score {Math.max(0, Math.min(100, Number(user?.trustScore || 0)))}
+                </ThemedText>
+              </View>
+              <View style={[styles.metricBadge, { backgroundColor: theme.backgroundSecondary }]}>
+                <Icon name="users" size={16} color={theme.textSecondary} />
+                <ThemedText type="small" style={{ color: theme.textSecondary }}>
+                  {Number(user?.meetupCount || 0)} Meetups
+                </ThemedText>
+              </View>
+            </View>
+
+            <View style={styles.intentOptionsRow}>
+              {INTENT_MODE_OPTIONS.map((option) => {
+                const active = (user?.intentMode || "explore_city") === option.value;
+                return (
+                  <Pressable
+                    key={option.value}
+                    onPress={() => updateProfile({ intentMode: option.value })}
+                    style={[
+                      styles.intentChip,
+                      {
+                        backgroundColor: active ? theme.primary : theme.backgroundSecondary,
+                      },
+                    ]}
+                  >
+                    <Icon name={option.icon} size={14} color={active ? "#FFFFFF" : theme.textSecondary} />
+                    <ThemedText type="small" style={{ color: active ? "#FFFFFF" : theme.textSecondary }}>
+                      {option.label}
+                    </ThemedText>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            {user?.activePlan?.title ? (
+              <View style={[styles.activePlanCard, { backgroundColor: theme.backgroundSecondary }]}>
+                <Icon name="calendar" size={16} color={theme.primary} />
+                <View style={{ flex: 1 }}>
+                  <ThemedText type="body" style={{ fontWeight: "700" }}>
+                    {user.activePlan.title}
+                  </ThemedText>
+                  {user.activePlan.city ? (
+                    <ThemedText type="small" style={{ color: theme.textSecondary }}>
+                      {user.activePlan.city}
+                    </ThemedText>
+                  ) : null}
+                </View>
+              </View>
+            ) : null}
+          </View>
         </Animated.View>
 
         <Animated.View entering={FadeInDown.delay(200).springify()}>
@@ -760,6 +859,48 @@ export default function ProfileScreen() {
               ))}
             </View>
 
+            <ThemedText type="small" style={styles.label}>
+              Mode For Discover
+            </ThemedText>
+            <View style={styles.intentOptionsRow}>
+              {INTENT_MODE_OPTIONS.map((option) => {
+                const active = editData.intentMode === option.value;
+                return (
+                  <Pressable
+                    key={option.value}
+                    onPress={() => setEditData({ ...editData, intentMode: option.value })}
+                    style={[
+                      styles.intentChip,
+                      { backgroundColor: active ? theme.primary : theme.cardBackground },
+                    ]}
+                  >
+                    <Icon name={option.icon} size={14} color={active ? "#FFFFFF" : theme.textSecondary} />
+                    <ThemedText type="small" style={{ color: active ? "#FFFFFF" : theme.textSecondary }}>
+                      {option.label}
+                    </ThemedText>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <Input
+              label="Current Plan Title (optional)"
+              placeholder="e.g., Sunset walk + coffee"
+              value={editData.planTitle}
+              onChangeText={(text) => setEditData({ ...editData, planTitle: text })}
+              icon="calendar"
+              containerStyle={styles.modalInput}
+            />
+
+            <Input
+              label="Plan City (optional)"
+              placeholder="e.g., Mumbai"
+              value={editData.planCity}
+              onChangeText={(text) => setEditData({ ...editData, planCity: text })}
+              icon="map-pin"
+              containerStyle={styles.modalInput}
+            />
+
             <GradientButton onPress={handleSaveProfile} style={styles.saveButton}>
               Save Changes
             </GradientButton>
@@ -1173,5 +1314,40 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,
     borderRadius: BorderRadius.full,
+  },
+  intentHeaderRow: {
+    flexDirection: "row",
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
+  },
+  metricBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.full,
+  },
+  intentOptionsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
+  },
+  intentChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.full,
+  },
+  activePlanCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.md,
+    marginTop: Spacing.xs,
   },
 });

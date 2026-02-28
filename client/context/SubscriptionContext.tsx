@@ -54,44 +54,40 @@ const TIER_FEATURES: Record<SubscriptionTier, string[]> = {
   starter: [
     "2 Radar scans per day",
     "2 Compatibility checks per day",
-    "15 AI Advisor chats per month",
     "4 Activities per month",
   ],
   explorer: [
     "15 Radar scans per day",
     "15 Compatibility checks per day",
-    "50 AI Advisor chats per month",
     "15 Activities per month",
   ],
   adventurer: [
     "Unlimited Radar scans",
     "Unlimited Compatibility checks",
-    "Unlimited AI Advisor chats",
     "Unlimited Activities",
   ],
   lifetime: [
     "Unlimited Radar scans",
     "Unlimited Compatibility checks",
-    "Unlimited AI Advisor chats",
     "Unlimited Activities",
   ],
 };
 
 export const TIER_LIMITS: Record<
   SubscriptionTier,
-  { activities: number; aiChats: number; radarScans: number; compatChecks: number }
+  { activities: number; radarScans: number; compatChecks: number }
 > = {
-  starter: { activities: 4, aiChats: 15, radarScans: 2, compatChecks: 2 },
-  explorer: { activities: 15, aiChats: 50, radarScans: 15, compatChecks: 15 },
-  adventurer: { activities: -1, aiChats: -1, radarScans: -1, compatChecks: -1 },
-  lifetime: { activities: -1, aiChats: -1, radarScans: -1, compatChecks: -1 },
+  starter: { activities: 4, radarScans: 2, compatChecks: 2 },
+  explorer: { activities: 15, radarScans: 15, compatChecks: 15 },
+  adventurer: { activities: -1, radarScans: -1, compatChecks: -1 },
+  lifetime: { activities: -1, radarScans: -1, compatChecks: -1 },
 };
 
 const TIER_PRICES: Record<SubscriptionTier, string> = {
-  starter: "$0/month",
-  explorer: "$6.99/month",
-  adventurer: "$15.99/month",
-  lifetime: "$99.99",
+  starter: "Free",
+  explorer: "INR 149/month",
+  adventurer: "INR 299/month",
+  lifetime: "INR 2,499",
 };
 
 const includesAny = (values: string[], keywords: string[]) => {

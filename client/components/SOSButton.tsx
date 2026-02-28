@@ -225,7 +225,7 @@ export function SOSButton({ visible = true }: SOSButtonProps) {
         message += "\n\nLocation: Unable to determine";
       }
 
-      message += `\n\nSent via Nomad Connect SOS`;
+      message += `\n\nSent via ExploreX SOS`;
 
       logIncident(currentLocation, message);
 

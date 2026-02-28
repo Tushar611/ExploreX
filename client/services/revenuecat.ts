@@ -5,6 +5,7 @@ import Purchases, {
   LOG_LEVEL,
 } from "react-native-purchases";
 import { Platform } from "react-native";
+import Constants from "expo-constants";
 
 const REVENUECAT_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_API_KEY;
 const REVENUECAT_IOS_KEY = process.env.EXPO_PUBLIC_REVENUECAT_IOS_KEY;
@@ -15,6 +16,13 @@ const ENTITLEMENT_ADVENTURER = "adventurer";
 const ENTITLEMENT_LIFETIME = "lifetime";
 
 let isConfigured = false;
+
+function isRunningInExpoGo(): boolean {
+  const appOwnership = (Constants as any)?.appOwnership;
+  const executionEnvironment = (Constants as any)?.executionEnvironment;
+  return appOwnership === "expo" || executionEnvironment === "storeClient";
+}
+
 
 function getApiKey(): string | undefined {
   if (REVENUECAT_API_KEY) return REVENUECAT_API_KEY;
@@ -45,6 +53,11 @@ export async function configureRevenueCat(userId?: string): Promise<boolean> {
 
   const apiKey = getApiKey();
 
+  if (isRunningInExpoGo()) {
+    console.log("RevenueCat disabled in Expo Go. Use development build or Test Store key.");
+    return false;
+  }
+
   if (!apiKey) {
     console.log("RevenueCat running in preview mode (no API key)");
     return false;
@@ -60,7 +73,7 @@ export async function configureRevenueCat(userId?: string): Promise<boolean> {
     console.log("RevenueCat configured successfully");
     return true;
   } catch (error) {
-    console.log("RevenueCat configuration error:", error);
+    console.log("RevenueCat configuration skipped:", (error as any)?.message || error);
     return false;
   }
 }
