@@ -884,7 +884,7 @@ export default function ChatScreen() {
           {
             backgroundColor: "transparent",
             paddingBottom: insets.bottom > 0 ? insets.bottom : Spacing.lg,
-            borderTopColor: "rgba(0,0,0,0.06)",
+            borderTopColor: theme.border,
           },
         ]}
       >
@@ -916,7 +916,7 @@ export default function ChatScreen() {
         <View
           style={[
             styles.inputWrapper,
-            { backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "rgba(0,0,0,0.1)" },
+            { backgroundColor: theme.inputBackground, borderWidth: 1, borderColor: theme.inputBorder },
           ]}
         >
           <Pressable
@@ -1717,7 +1717,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 16,
-    backgroundColor: "rgba(232, 116, 79, 0.15)",
+    backgroundColor: "rgba(36, 107, 253, 0.15)",
     marginBottom: 8,
     alignSelf: "center",
   },

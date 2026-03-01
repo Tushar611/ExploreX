@@ -410,7 +410,7 @@ export default function ActivitiesScreen() {
           onPress={() => navigation.navigate("SocialRadar" as any)}
         >
           <LinearGradient
-            colors={["#FF8C42", "#F9A826"]}
+            colors={[AppColors.primary, AppColors.accent]}
             style={styles.radarBtnGradient}
           >
             <Ionicons name="radio-outline" size={20} color="#FFF" />
@@ -530,7 +530,7 @@ export default function ActivitiesScreen() {
               </ThemedText>
             </View>
             <View style={[styles.timeChip, { backgroundColor: isDark ? "#2B2A28" : theme.backgroundSecondary }]}>
-              <Icon name="clock" size={12} color="#FF8C42" />
+              <Icon name="clock" size={12} color={AppColors.primary} />
               <ThemedText type="small" style={styles.timeChipText}>
                 {formatTime(item.date)}
               </ThemedText>
@@ -582,7 +582,7 @@ export default function ActivitiesScreen() {
           <RefreshControl
             refreshing={isLoading}
             onRefresh={refreshData}
-            tintColor="#FF8C42"
+            tintColor={AppColors.primary}
           />
         }
         ListEmptyComponent={
@@ -601,7 +601,7 @@ export default function ActivitiesScreen() {
         onPress={() => setShowMapModal(true)}
         testID="button-open-map"
       >
-        <Icon name="map" size={20} color="#FF8C42" />
+        <Icon name="map" size={20} color={AppColors.primary} />
       </Pressable>
 
       {isAuthenticated && activities.length > 0 ? (
@@ -1245,8 +1245,8 @@ const styles = StyleSheet.create({
     marginRight: 0,
   },
   filterChipActive: {
-    backgroundColor: "#FF8C42",
-    shadowColor: "#FF8C42",
+    backgroundColor: AppColors.primary,
+    shadowColor: AppColors.primary,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.18,
     shadowRadius: 6,
@@ -1311,7 +1311,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 100,
-    backgroundColor: "rgba(255,140,66,0.85)",
+    backgroundColor: "rgba(36,107,253,0.86)",
   },
   typeBadgeText: {
     color: "#FFFFFF",
@@ -1371,7 +1371,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   timeChipText: {
-    color: "#FF8C42",
+    color: AppColors.primary,
     marginLeft: 4,
     fontWeight: "600",
     fontSize: 12,
@@ -1384,8 +1384,8 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#FF8C42",
-    shadowColor: "#FF8C42",
+    backgroundColor: AppColors.primary,
+    shadowColor: AppColors.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.22,
     shadowRadius: 8,

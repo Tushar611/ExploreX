@@ -33,6 +33,7 @@ import { useTheme } from "@/hooks/useTheme";
 import { useData } from "@/context/DataContext";
 import { useAuth } from "@/context/AuthContext";
 import { useSubscription } from "@/context/SubscriptionContext";
+import { useAlert } from "@/context/AlertContext";
 import { AppColors, Spacing, BorderRadius, Shadows, GradientPresets } from "@/constants/theme";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
@@ -87,6 +88,7 @@ export default function DiscoverScreen() {
   const { profiles, swipeRight, swipeLeft, matches, likedProfiles, refreshData } = useData();
   const { user } = useAuth();
   const { tier } = useSubscription();
+  const { showAlert } = useAlert();
   const [showMatch, setShowMatch] = useState(false);
   const [matchedName, setMatchedName] = useState("");
   const [matchedPhoto, setMatchedPhoto] = useState("");
@@ -94,6 +96,7 @@ export default function DiscoverScreen() {
   const [showLikedModal, setShowLikedModal] = useState(false);
   const [matchedUserData, setMatchedUserData] = useState<any>(null);
   const [showCompatibility, setShowCompatibility] = useState(false);
+  const [isRefreshingProfiles, setIsRefreshingProfiles] = useState(false);
 
   const handleSendMessage = useCallback(() => {
     setShowMatch(false);
@@ -154,17 +157,40 @@ export default function DiscoverScreen() {
           </ThemedText>
           <Pressable
             onPress={async () => {
+              if (isRefreshingProfiles) return;
+              setIsRefreshingProfiles(true);
               try {
-                const baseUrl = getApiUrl();
-                await fetch(new URL(`/api/swipes/reset/${user?.id}`, baseUrl).toString(), { method: "POST" });
+                if (user?.id) {
+                  const baseUrl = getApiUrl();
+                  const resetUrl = new URL(`/api/swipes/reset/${user.id}`, baseUrl);
+                  resetUrl.searchParams.set("t", Date.now().toString());
+                  const response = await fetch(resetUrl.toString(), { method: "POST" });
+                  if (!response.ok) {
+                    throw new Error("Failed to reset swipes");
+                  }
+                }
+
                 await refreshData();
-              } catch {}
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                showAlert({ type: "success", title: "Updated", message: "Profiles refreshed." });
+              } catch (error) {
+                showAlert({ type: "error", title: "Refresh failed", message: "Could not refresh profiles. Try again." });
+              } finally {
+                setIsRefreshingProfiles(false);
+              }
             }}
-            style={[styles.refreshButton, { backgroundColor: AppColors.primary }]}
+            disabled={isRefreshingProfiles}
+            style={[
+              styles.refreshButton,
+              {
+                backgroundColor: AppColors.primary,
+                opacity: isRefreshingProfiles ? 0.7 : 1,
+              },
+            ]}
           >
             <Icon name="refresh-cw" size={18} color="#FFFFFF" />
             <ThemedText type="body" style={{ color: "#FFFFFF", marginLeft: 8, fontWeight: "600" as const }}>
-              Refresh Profiles
+              {isRefreshingProfiles ? "Refreshing..." : "Refresh Profiles"}
             </ThemedText>
           </Pressable>
         </View>
@@ -387,7 +413,7 @@ export default function DiscoverScreen() {
       <View style={[styles.actions, { bottom: tabBarHeight + 10 }]}>
         <TinderButton
           icon="x"
-          color={AppColors.sunsetRose}
+          color={AppColors.primary}
           size={60}
           iconSize={28}
           onPress={() => {
@@ -397,7 +423,7 @@ export default function DiscoverScreen() {
         />
         <TinderButton
           icon="star"
-          color={AppColors.sunsetGold}
+          color={AppColors.primary}
           size={46}
           iconSize={20}
           onPress={() => {
@@ -408,7 +434,7 @@ export default function DiscoverScreen() {
         />
         <TinderButton
           icon="heart"
-          color={AppColors.sunsetCoral}
+          color={AppColors.primary}
           size={60}
           iconSize={28}
           onPress={() => {

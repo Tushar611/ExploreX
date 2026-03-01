@@ -84,12 +84,12 @@ const LOOKING_FOR_OPTIONS: { value: string; label: string; icon: string }[] = [
 ];
 
 const THEME_COLORS = [
-  { name: "Sunset Orange", primary: "#E8744F", accent: "#F4A261" },
-  { name: "Ocean Blue", primary: "#0077B6", accent: "#00B4D8" },
-  { name: "Forest Green", primary: "#2D6A4F", accent: "#52B788" },
-  { name: "Mountain Purple", primary: "#7B2CBF", accent: "#9D4EDD" },
-  { name: "Desert Sand", primary: "#BC6C25", accent: "#DDA15E" },
+  { name: "Ocean Blue", primary: "#246BFD", accent: "#2CC3FF" },
+  { name: "Arctic Blue", primary: "#1E88E5", accent: "#4FC3F7" },
   { name: "Night Sky", primary: "#1E3A5F", accent: "#3A7CA5" },
+  { name: "Forest Green", primary: "#2D6A4F", accent: "#52B788" },
+  { name: "Slate Indigo", primary: "#3749A6", accent: "#6F7FD8" },
+  { name: "Mountain Purple", primary: "#5B5FC7", accent: "#7D8BFF" },
 ];
 
 export default function ProfileScreen() {
@@ -655,6 +655,56 @@ export default function ProfileScreen() {
             <ThemedText type="h4" style={styles.themeSection}>
               Appearance
             </ThemedText>
+            <View style={styles.themeModeGrid}>
+              <Pressable
+                style={[
+                  styles.themeModeButton,
+                  {
+                    backgroundColor: themeMode === "light" ? theme.primary : theme.cardBackground,
+                    borderWidth: 1,
+                    borderColor: theme.border,
+                  },
+                ]}
+                onPress={() => setThemeMode("light")}
+              >
+                <Icon name="sun" size={18} color={themeMode === "light" ? "#FFFFFF" : theme.text} />
+                <ThemedText style={{ marginTop: 6, color: themeMode === "light" ? "#FFFFFF" : theme.text }}>
+                  Light
+                </ThemedText>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.themeModeButton,
+                  {
+                    backgroundColor: themeMode === "dark" ? theme.primary : theme.cardBackground,
+                    borderWidth: 1,
+                    borderColor: theme.border,
+                  },
+                ]}
+                onPress={() => setThemeMode("dark")}
+              >
+                <Icon name="moon" size={18} color={themeMode === "dark" ? "#FFFFFF" : theme.text} />
+                <ThemedText style={{ marginTop: 6, color: themeMode === "dark" ? "#FFFFFF" : theme.text }}>
+                  Dark
+                </ThemedText>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.themeModeButton,
+                  {
+                    backgroundColor: themeMode === "system" ? theme.primary : theme.cardBackground,
+                    borderWidth: 1,
+                    borderColor: theme.border,
+                  },
+                ]}
+                onPress={() => setThemeMode("system")}
+              >
+                <Icon name="smartphone" size={18} color={themeMode === "system" ? "#FFFFFF" : theme.text} />
+                <ThemedText style={{ marginTop: 6, color: themeMode === "system" ? "#FFFFFF" : theme.text }}>
+                  System
+                </ThemedText>
+              </Pressable>
+            </View>
 
             <ThemedText type="h4" style={styles.themeSection}>
               Customize Theme

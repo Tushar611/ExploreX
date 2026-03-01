@@ -357,7 +357,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const baseUrl = getApiUrl();
 
       const profileUrl = new URL(`/api/user-profiles/${user.id}`, baseUrl);
-      const profileRes = await fetch(profileUrl.toString());
+      profileUrl.searchParams.set("t", Date.now().toString());
+      const profileRes = await fetchWithTimeout(profileUrl.toString(), { method: "GET" }, 8000);
       let serverProfile: Partial<User> = {};
       if (profileRes.ok) {
         const data = await profileRes.json();
@@ -381,7 +382,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       let verificationData: Partial<User> = {};
       try {
         const verUrl = new URL(`/api/verification/status/${user.id}`, baseUrl);
-        const verRes = await fetch(verUrl.toString());
+        verUrl.searchParams.set("t", Date.now().toString());
+        const verRes = await fetchWithTimeout(verUrl.toString(), { method: "GET" }, 8000);
         if (verRes.ok) {
           const vData = await verRes.json();
           verificationData = {

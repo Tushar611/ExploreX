@@ -7,6 +7,7 @@ import {
   TextInput,
   TouchableOpacity,
   ImageBackground,
+  Image,
   Modal,
   Platform,
   ToastAndroid,
@@ -19,37 +20,17 @@ import Animated, {
   FadeInUp,
 } from "react-native-reanimated";
 import * as Haptics from "expo-haptics";
-import Svg, { Path, Circle, Rect } from "react-native-svg";
 
 import { ThemedText } from "@/components/ThemedText";
 import { Icon } from "@/components/Icon";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { useAuth } from "@/context/AuthContext";
 import { useAlert } from "@/context/AlertContext";
-import { AppColors, Spacing } from "@/constants/theme";
+import { AppColors } from "@/constants/theme";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 
-function VanLogo({ size = 60, color = "#FFFFFF" }: { size?: number; color?: string }) {
-  return (
-    <Svg width={size} height={size * 0.65} viewBox="0 0 100 65">
-      <Rect x="5" y="18" width="70" height="32" rx="6" fill={color} />
-      <Rect x="65" y="22" width="30" height="28" rx="4" fill={color} />
-      <Rect x="72" y="26" width="18" height="14" rx="2" fill="rgba(173,216,255,0.85)" />
-      <Rect x="10" y="24" width="16" height="12" rx="2" fill="rgba(173,216,255,0.7)" />
-      <Rect x="30" y="24" width="16" height="12" rx="2" fill="rgba(173,216,255,0.7)" />
-      <Rect x="50" y="24" width="12" height="12" rx="2" fill="rgba(173,216,255,0.7)" />
-      <Circle cx="22" cy="50" r="9" fill="#2C2C2E" />
-      <Circle cx="22" cy="50" r="5" fill="#4A4A4A" />
-      <Circle cx="22" cy="50" r="2" fill="#6A6A6A" />
-      <Circle cx="68" cy="50" r="9" fill="#2C2C2E" />
-      <Circle cx="68" cy="50" r="5" fill="#4A4A4A" />
-      <Circle cx="68" cy="50" r="2" fill="#6A6A6A" />
-      <Rect x="0" y="35" width="7" height="5" rx="2" fill={color} />
-      <Path d="M88 35 L95 35 L95 40 L88 42 Z" fill="rgba(255,200,0,0.8)" />
-    </Svg>
-  );
-}
+
 
 type ResetStep = "email" | "otp" | "password" | "success";
 
@@ -275,9 +256,6 @@ export default function AuthScreen() {
         showsVerticalScrollIndicator={false}
       >
         <Animated.View entering={FadeInDown.delay(100).duration(600)} style={styles.header}>
-          <View style={styles.logoContainer}>
-            <VanLogo size={80} color={AppColors.primary} />
-          </View>
           <ThemedText style={styles.appName}>ExploreX</ThemedText>
           <ThemedText style={styles.tagline}>Find your tribe on the road</ThemedText>
         </Animated.View>
@@ -402,14 +380,17 @@ export default function AuthScreen() {
         </Animated.View>
 
         <Animated.View entering={FadeIn.delay(500).duration(600)} style={styles.footer}>
-          <ThemedText style={styles.footerText}>
-            {isLogin ? "New to ExploreX? " : "Already a member? "}
-          </ThemedText>
-          <Pressable onPress={toggleMode} testID="button-toggle-auth">
-            <ThemedText style={styles.footerLink}>
-              {isLogin ? "Sign Up" : "Sign In"}
+          <Image source={require("../../assets/images/android-icon-foreground.png")} style={styles.footerLogo} resizeMode="contain" />
+          <View style={styles.footerRow}>
+            <ThemedText style={styles.footerText}>
+              {isLogin ? "New to ExploreX? " : "Already a member? "}
             </ThemedText>
-          </Pressable>
+            <Pressable onPress={toggleMode} testID="button-toggle-auth">
+              <ThemedText style={styles.footerLink}>
+                {isLogin ? "Sign Up" : "Sign In"}
+              </ThemedText>
+            </Pressable>
+          </View>
         </Animated.View>
       </KeyboardAwareScrollViewCompat>
 
@@ -641,14 +622,7 @@ const styles = StyleSheet.create({
   },
   header: {
     alignItems: "center",
-    marginBottom: 32,
-  },
-  logoContainer: {
-    marginBottom: 16,
-    shadowColor: AppColors.primary,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.5,
-    shadowRadius: 16,
+    marginBottom: 24,
   },
   appName: {
     fontSize: 32,
@@ -832,10 +806,20 @@ const styles = StyleSheet.create({
     textDecorationLine: 'underline',
   },
   footer: {
-    flexDirection: "row",
-    justifyContent: "center",
     alignItems: "center",
-    paddingVertical: 24,
+    justifyContent: "center",
+    paddingVertical: 20,
+    gap: 12,
+  },
+  footerLogo: {
+    width: 34,
+    height: 34,
+    opacity: 0.95,
+  },
+  footerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
   },
   footerText: {
     fontSize: 15,

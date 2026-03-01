@@ -11,7 +11,7 @@ export default function SplashScreen({ onAnimationComplete }: SplashScreenProps)
   const hasCompleted = useRef(false);
 
   const player = useVideoPlayer(
-    require("../../Explorex_logo_animation_json_5b0e38ec54.mp4"),
+    require("../../Explorex_logo_animation_json_delpmaspu_.mp4"),
     (instance) => {
       instance.muted = true;
       instance.loop = true;
@@ -38,6 +38,7 @@ export default function SplashScreen({ onAnimationComplete }: SplashScreenProps)
         player={player}
         style={StyleSheet.absoluteFill}
         contentFit="cover"
+        nativeControls={false}
         allowsPictureInPicture={false}
         fullscreenOptions={{
           enable: false,

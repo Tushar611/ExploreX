@@ -327,6 +327,16 @@ const MOCK_USERS: User[] = [
 
 const MOCK_ACTIVITIES: Activity[] = [];
 
+const buildFallbackDiscoverProfiles = (currentUserId?: string): SwipeCard[] => {
+  return MOCK_USERS
+    .filter((u) => !currentUserId || u.id !== currentUserId)
+    .slice(0, 30)
+    .map((u) => ({
+      user: u,
+      distance: Math.floor(Math.random() * 50) + 1,
+    }));
+};
+
 const MOCK_FORUM_POSTS: ForumPost[] = [
   {
     id: "post1",
@@ -574,7 +584,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
         ...localMatches.filter((localMatch) => !serverMatchIds.has(localMatch.id)),
       ];
 
-      setProfiles(discoverRes);
+      const discoverCards = (discoverRes && discoverRes.length > 0)
+        ? discoverRes
+        : buildFallbackDiscoverProfiles(userId);
+      setProfiles(discoverCards);
       setActivities(loadedActivities || []);
       setLikedIds(new Set(likedRes.map((u) => u.id)));
 

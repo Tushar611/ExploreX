@@ -21,7 +21,7 @@ export type MainTabParamList = {
 const Tab = createBottomTabNavigator<MainTabParamList>();
 
 export default function MainTabNavigator() {
-  const { isDark } = useTheme();
+  const { isDark, theme } = useTheme();
 
   return (
     <Tab.Navigator
@@ -35,8 +35,8 @@ export default function MainTabNavigator() {
           position: "absolute",
           backgroundColor: Platform.select({
             ios: "transparent",
-            android: isDark ? "#1F1B18" : "#FFF8F4",
-            web: isDark ? "#1F1B18" : "#FFF8F4",
+            android: isDark ? theme.backgroundSecondary : theme.backgroundRoot,
+            web: isDark ? theme.backgroundSecondary : theme.backgroundRoot,
           }),
           borderTopWidth: 0,
           elevation: 0,
