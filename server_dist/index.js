@@ -2026,7 +2026,7 @@ ${vanDetails}` }
             ) VALUES (
               $1, COALESCE($2, ''), COALESCE($3, 0), COALESCE($4, ''),
               COALESCE($5::jsonb, '[]'::jsonb), COALESCE($6::jsonb, '[]'::jsonb), COALESCE($7, ''),
-              0, 0, $8, true, NOW(), NOW()
+              0, 0, NOW(), true, NOW(), NOW()
             )
             ON CONFLICT (id) DO UPDATE SET
               name = COALESCE(EXCLUDED.name, user_profiles.name),
@@ -2044,8 +2044,7 @@ ${vanDetails}` }
             bio ?? null,
             interests ? JSON.stringify(interests) : null,
             photos ? JSON.stringify(photos) : null,
-            location ?? null,
-            Date.now()
+            location ?? null
           ]
         );
         const normalizedIntent = normalizeIntentMode(intentMode);
@@ -3456,7 +3455,7 @@ Badge assignment:
             [userId]
           );
           const existingIds = new Set(realProfiles2.map((p) => String(p.id)));
-          const syntheticRows = appUsersRes.rows.filter((u) => !excludeIds.has(String(u.id)) && !existingIds.has(String(u.id))).map((u) => ({
+          const syntheticRows = appUsersRes.rows.filter((u) => !strictExcludedIds2.has(String(u.id)) && !existingIds.has(String(u.id))).map((u) => ({
             id: u.id,
             email: u.email,
             name: u.name || (String(u.email || "").split("@")[0] || "Explorer"),
@@ -3476,7 +3475,7 @@ Badge assignment:
               const existingAfterSynthetic = new Set(realProfiles2.map((p) => String(p.id)));
               const supplemental = sbProfiles.filter((row) => {
                 const id = String(row.id);
-                return !excludeIds.has(id) && !existingAfterSynthetic.has(id) && !id.startsWith("mock");
+                return !strictExcludedIds2.has(id) && !existingAfterSynthetic.has(id) && !id.startsWith("mock");
               }).map((row) => ({
                 id: row.id,
                 email: row.email || "",

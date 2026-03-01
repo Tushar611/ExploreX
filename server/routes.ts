@@ -2506,7 +2506,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
             ) VALUES (
               $1, COALESCE($2, ''), COALESCE($3, 0), COALESCE($4, ''),
               COALESCE($5::jsonb, '[]'::jsonb), COALESCE($6::jsonb, '[]'::jsonb), COALESCE($7, ''),
-              0, 0, $8, true, NOW(), NOW()
+              0, 0, NOW(), true, NOW(), NOW()
             )
             ON CONFLICT (id) DO UPDATE SET
               name = COALESCE(EXCLUDED.name, user_profiles.name),
@@ -2525,7 +2525,6 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
             interests ? JSON.stringify(interests) : null,
             photos ? JSON.stringify(photos) : null,
             location ?? null,
-            Date.now(),
           ]
         );
 
@@ -4349,7 +4348,7 @@ Badge assignment:
 
           const existingIds = new Set(realProfiles.map((p: any) => String(p.id)));
           const syntheticRows = appUsersRes.rows
-            .filter((u: any) => !excludeIds.has(String(u.id)) && !existingIds.has(String(u.id)))
+            .filter((u: any) => !strictExcludedIds.has(String(u.id)) && !existingIds.has(String(u.id)))
             .map((u: any) => ({
               id: u.id,
               email: u.email,
@@ -4380,7 +4379,7 @@ Badge assignment:
               const supplemental = sbProfiles
                 .filter((row: any) => {
                   const id = String(row.id);
-                  return !excludeIds.has(id) && !existingAfterSynthetic.has(id) && !id.startsWith('mock');
+                  return !strictExcludedIds.has(id) && !existingAfterSynthetic.has(id) && !id.startsWith('mock');
                 })
                 .map((row: any) => ({
                   id: row.id,
