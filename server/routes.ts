@@ -2448,10 +2448,10 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
   // ==================== COMPATIBILITY ANALYZER ====================
 
   const COMPATIBILITY_LIMITS: Record<string, number> = {
-    starter: 2,
-    free: 2,
-    explorer: 15,
-    pro: 15,
+    starter: -1,
+    free: -1,
+    explorer: -1,
+    pro: -1,
     adventurer: -1,
     expert: -1,
     lifetime: -1,
@@ -3761,6 +3761,40 @@ Badge assignment:
             }));
 
           realProfiles = [...realProfiles, ...syntheticRows];
+
+          // If old users exist in Supabase but not in PG yet, include them too.
+          try {
+            const sb = getSupabase();
+            const { data: sbProfiles } = await sb
+              .from('user_profiles')
+              .select('*')
+              .neq('id', userId)
+              .order('created_at', { ascending: false })
+              .limit(200);
+
+            if (sbProfiles && sbProfiles.length > 0) {
+              const existingAfterSynthetic = new Set(realProfiles.map((p: any) => String(p.id)));
+              const supplemental = sbProfiles
+                .filter((row: any) => {
+                  const id = String(row.id);
+                  return !excludeIds.has(id) && !existingAfterSynthetic.has(id) && !id.startsWith('mock');
+                })
+                .map((row: any) => ({
+                  id: row.id,
+                  email: row.email || '',
+                  name: row.name || (String(row.email || '').split('@')[0] || 'Explorer'),
+                  age: row.age || 25,
+                  bio: row.bio || '',
+                  location: row.location || '',
+                  photos: row.photos || [],
+                  interests: row.interests || [],
+                  created_at: row.created_at || new Date().toISOString(),
+                  updated_at: row.updated_at || new Date().toISOString(),
+                }));
+
+              realProfiles = [...realProfiles, ...supplemental];
+            }
+          } catch {}
         }
 
         const shuffle = (arr: any[]) => {

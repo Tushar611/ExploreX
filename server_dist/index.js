@@ -1930,10 +1930,10 @@ ${vanDetails}` }
     }
   });
   const COMPATIBILITY_LIMITS = {
-    starter: 2,
-    free: 2,
-    explorer: 15,
-    pro: 15,
+    starter: -1,
+    free: -1,
+    explorer: -1,
+    pro: -1,
     adventurer: -1,
     expert: -1,
     lifetime: -1
@@ -2924,6 +2924,30 @@ Badge assignment:
             updated_at: (/* @__PURE__ */ new Date()).toISOString()
           }));
           realProfiles2 = [...realProfiles2, ...syntheticRows];
+          try {
+            const sb2 = getSupabase();
+            const { data: sbProfiles } = await sb2.from("user_profiles").select("*").neq("id", userId).order("created_at", { ascending: false }).limit(200);
+            if (sbProfiles && sbProfiles.length > 0) {
+              const existingAfterSynthetic = new Set(realProfiles2.map((p) => String(p.id)));
+              const supplemental = sbProfiles.filter((row) => {
+                const id = String(row.id);
+                return !excludeIds2.has(id) && !existingAfterSynthetic.has(id) && !id.startsWith("mock");
+              }).map((row) => ({
+                id: row.id,
+                email: row.email || "",
+                name: row.name || (String(row.email || "").split("@")[0] || "Explorer"),
+                age: row.age || 25,
+                bio: row.bio || "",
+                location: row.location || "",
+                photos: row.photos || [],
+                interests: row.interests || [],
+                created_at: row.created_at || (/* @__PURE__ */ new Date()).toISOString(),
+                updated_at: row.updated_at || (/* @__PURE__ */ new Date()).toISOString()
+              }));
+              realProfiles2 = [...realProfiles2, ...supplemental];
+            }
+          } catch {
+          }
         }
         const shuffle2 = (arr) => {
           const copy = [...arr];
