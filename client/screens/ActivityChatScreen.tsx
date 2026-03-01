@@ -136,7 +136,7 @@ export default function ActivityChatScreen() {
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
   const { theme, isDark } = useTheme();
-  const { user } = useAuth();
+  const { user, session } = useAuth();
   const { showAlert } = useAlert();
   const { activities } = useData();
   const flatListRef = useRef<FlatList>(null);
@@ -169,6 +169,17 @@ export default function ActivityChatScreen() {
     "\u2705", "\u274C", "\u2B50", "\u26A1", "\u{1F4CC}", "\u{1F690}",
   ];
 
+  const authHeaders = useCallback((json = false) => {
+    const headers: Record<string, string> = {};
+    if (json) {
+      headers["Content-Type"] = "application/json";
+    }
+    if (session?.sessionToken) {
+      headers.Authorization = `Bearer ${session.sessionToken}`;
+    }
+    return headers;
+  }, [session?.sessionToken]);
+
   const activity = activities.find(a => a.id === activityId);
   const isModerator = moderators.some(m => m.userId === user?.id);
   const isHost = activity?.hostId === user?.id;
@@ -186,7 +197,9 @@ export default function ActivityChatScreen() {
   const fetchMessages = useCallback(async () => {
     try {
       const apiUrl = getApiUrl();
-      const response = await fetch(new URL(`/api/activities/${activityId}/messages`, apiUrl).toString());
+      const messagesUrl = new URL(`/api/activities/${activityId}/messages`, apiUrl);
+      if (user?.id) messagesUrl.searchParams.set("userId", user.id);
+      const response = await fetch(messagesUrl.toString(), { headers: authHeaders() });
       if (response.ok) {
         const data = await response.json();
         setMessages((prev) => {
@@ -208,7 +221,9 @@ export default function ActivityChatScreen() {
   const fetchModerators = useCallback(async () => {
     try {
       const apiUrl = getApiUrl();
-      const response = await fetch(new URL(`/api/activities/${activityId}/moderators`, apiUrl).toString());
+      const moderatorsUrl = new URL(`/api/activities/${activityId}/moderators`, apiUrl);
+      if (user?.id) moderatorsUrl.searchParams.set("userId", user.id);
+      const response = await fetch(moderatorsUrl.toString(), { headers: authHeaders() });
       if (response.ok) {
         const data = await response.json();
         setModerators(data);
@@ -224,7 +239,7 @@ export default function ActivityChatScreen() {
         const apiUrl = getApiUrl();
         await fetch(new URL(`/api/activities/${activityId}/init-chat`, apiUrl).toString(), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: authHeaders(true),
           body: JSON.stringify({ hostId: activity.hostId }),
         });
         setHasInitialized(true);
@@ -300,7 +315,7 @@ export default function ActivityChatScreen() {
         : undefined;
       const response = await fetch(new URL(`/api/activities/${activityId}/messages`, apiUrl).toString(), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(true),
         body: JSON.stringify({
           senderId: user.id,
           senderName: user.name,
@@ -334,7 +349,7 @@ export default function ActivityChatScreen() {
       const apiUrl = getApiUrl();
       const response = await fetch(new URL(`/api/activities/${activityId}/messages/${messageId}/pin`, apiUrl).toString(), {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(true),
         body: JSON.stringify({ userId: user?.id, pin }),
       });
       if (!response.ok) {
@@ -358,9 +373,11 @@ export default function ActivityChatScreen() {
     
     try {
       const apiUrl = getApiUrl();
-      await fetch(new URL(`/api/activities/${activityId}/messages/${selectedMessage.id}`, apiUrl).toString(), {
+      const deleteUrl = new URL(`/api/activities/${activityId}/messages/${selectedMessage.id}`, apiUrl);
+      if (user?.id) deleteUrl.searchParams.set("userId", user.id);
+      await fetch(deleteUrl.toString(), {
         method: "DELETE",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(true),
         body: JSON.stringify({ userId: user?.id }),
       });
       fetchMessages();
@@ -384,10 +401,12 @@ export default function ActivityChatScreen() {
     
     try {
       const apiUrl = getApiUrl();
-      await fetch(new URL(`/api/activities/${activityId}/messages/${selectedMessage.id}`, apiUrl).toString(), {
+      const deleteUrl = new URL(`/api/activities/${activityId}/messages/${selectedMessage.id}`, apiUrl);
+      if (user?.id) deleteUrl.searchParams.set("userId", user.id);
+      await fetch(deleteUrl.toString(), {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: editText.trim() }),
+        headers: authHeaders(true),
+        body: JSON.stringify({ content: editText.trim(), userId: user?.id }),
       });
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       fetchMessages();
@@ -412,7 +431,7 @@ export default function ActivityChatScreen() {
         new URL(`/api/activities/${activityId}/messages/${message.id}/react`, apiUrl).toString(),
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: authHeaders(true),
           body: JSON.stringify({ userId: user?.id, emoji }),
         }
       );
@@ -1151,11 +1170,20 @@ export default function ActivityChatScreen() {
                         style={[styles.modButton, { backgroundColor: memberIsMod ? theme.backgroundSecondary : `${AppColors.primary}20` }]}
                         onPress={async () => {
                           const apiUrl = getApiUrl();
-                          await fetch(new URL(`/api/activities/${activityId}/moderators`, apiUrl).toString(), {
-                            method: memberIsMod ? "DELETE" : "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ userId: member.id }),
-                          });
+                          if (memberIsMod) {
+                            const removeUrl = new URL(`/api/activities/${activityId}/moderators/${member.id}`, apiUrl);
+                            if (user?.id) removeUrl.searchParams.set("requesterId", user.id);
+                            await fetch(removeUrl.toString(), {
+                              method: "DELETE",
+                              headers: authHeaders(),
+                            });
+                          } else {
+                            await fetch(new URL(`/api/activities/${activityId}/moderators`, apiUrl).toString(), {
+                              method: "POST",
+                              headers: authHeaders(true),
+                              body: JSON.stringify({ requesterId: user?.id, userId: member.id, isHost: false }),
+                            });
+                          }
                           fetchModerators();
                         }}
                       >

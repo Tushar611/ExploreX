@@ -86,7 +86,7 @@ export default function DiscoverScreen() {
   const navigation = useNavigation<any>();
   const { theme, isDark } = useTheme();
   const { profiles, swipeRight, swipeLeft, matches, likedProfiles, refreshData } = useData();
-  const { user } = useAuth();
+  const { user, session } = useAuth();
   const { tier } = useSubscription();
   const { showAlert } = useAlert();
   const [showMatch, setShowMatch] = useState(false);
@@ -164,7 +164,7 @@ export default function DiscoverScreen() {
                   const baseUrl = getApiUrl();
                   const resetUrl = new URL(`/api/swipes/reset/${user.id}`, baseUrl);
                   resetUrl.searchParams.set("t", Date.now().toString());
-                  const response = await fetch(resetUrl.toString(), { method: "POST" });
+                  const response = await fetch(resetUrl.toString(), { method: "POST", headers: session?.sessionToken ? { Authorization: `Bearer ${session.sessionToken}` } : {} });
                   if (!response.ok) {
                     throw new Error("Failed to reset swipes");
                   }

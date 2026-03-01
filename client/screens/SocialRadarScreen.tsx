@@ -234,7 +234,7 @@ function ActivityCard({ activity, onPress }: { activity: NearbyActivity; onPress
 
 export default function SocialRadarScreen() {
   const insets = useSafeAreaInsets();
-  const { user } = useAuth();
+  const { user, session } = useAuth();
   const { tier } = useSubscription();
   const navigation = useNavigation<any>();
 
@@ -319,6 +319,13 @@ export default function SocialRadarScreen() {
     cancelAnimation(sweepRotation);
   };
 
+  const authHeaders = (json = false) => {
+    const headers: Record<string, string> = {};
+    if (json) headers["Content-Type"] = "application/json";
+    if (session?.sessionToken) headers.Authorization = `Bearer ${session.sessionToken}`;
+    return headers;
+  };
+
   const handleScan = async () => {
     if (!user?.id) return;
     setScanning(true);
@@ -366,7 +373,7 @@ export default function SocialRadarScreen() {
 
       const response = await fetch(new URL("/api/radar/scan", baseUrl).toString(), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(true),
         body: JSON.stringify({
           userId: user.id,
           lat,
@@ -441,12 +448,12 @@ export default function SocialRadarScreen() {
       const baseUrl = getApiUrl();
 
       const { data: myProfile } = await fetch(
-        new URL(`/api/user-profiles/${user.id}`, baseUrl).toString()
+        new URL(`/api/user-profiles/${user.id}`, baseUrl).toString(), { headers: authHeaders() }
       ).then(r => r.json().then(d => ({ data: d })).catch(() => ({ data: null })));
 
       const response = await fetch(new URL("/api/radar/chat-request", baseUrl).toString(), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(true),
         body: JSON.stringify({
           senderId: user.id,
           receiverId: targetUser.userId,

@@ -5,7 +5,8 @@ import * as fs from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import { Pool } from "pg";
 import multer from "multer";
-import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
+import { randomBytes, scryptSync, timingSafeEqual, createHmac } from "crypto";
+import { createRateLimiter } from "./security";
 
 async function callGroqChat(messages: { role: string; content: string }[]) {
   if (!groqApiKey) {
@@ -67,6 +68,24 @@ async function checkSupabaseTables() {
   }
 }
 
+const authRateLimit = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 25,
+  message: "Too many auth attempts. Please try again in 15 minutes.",
+});
+
+const passwordResetRateLimit = createRateLimiter({
+  windowMs: 10 * 60 * 1000,
+  max: 8,
+  message: "Too many password reset attempts. Please wait and try again.",
+});
+
+const feedbackRateLimit = createRateLimiter({
+  windowMs: 10 * 60 * 1000,
+  max: 6,
+  message: "Too many feedback submissions. Please wait before trying again.",
+});
+
 // In-memory OTP storage
 interface OTPEntry {
   email: string;
@@ -75,6 +94,141 @@ interface OTPEntry {
   used: boolean;
 }
 const otpStore: Map<string, OTPEntry> = new Map();
+
+const loginFailureStore: Map<string, { attempts: number; lockUntil?: number }> = new Map();
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeEmail(value: unknown): string {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isValidEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function isStrongPassword(password: string): boolean {
+  if (password.length < 8) return false;
+  const hasUpper = /[A-Z]/.test(password);
+  const hasLower = /[a-z]/.test(password);
+  const hasDigit = /\d/.test(password);
+  const hasSpecial = /[^A-Za-z0-9]/.test(password);
+  return hasUpper && hasLower && hasDigit && hasSpecial;
+}
+
+function getAuthAttemptKey(req: Request, email: string): string {
+  const fwd = req.headers["x-forwarded-for"];
+  const ipRaw = Array.isArray(fwd) ? fwd[0] : fwd;
+  const ip = typeof ipRaw === "string" && ipRaw ? ipRaw.split(",")[0].trim() : (req.ip || "unknown");
+  return `${email}::${ip}`;
+}
+
+function getLockState(key: string): { locked: boolean; remainingMs: number } {
+  const now = Date.now();
+  const state = loginFailureStore.get(key);
+  if (!state || !state.lockUntil) return { locked: false, remainingMs: 0 };
+  if (state.lockUntil <= now) {
+    loginFailureStore.delete(key);
+    return { locked: false, remainingMs: 0 };
+  }
+  return { locked: true, remainingMs: state.lockUntil - now };
+}
+
+function recordFailedLogin(key: string): void {
+  const now = Date.now();
+  const state = loginFailureStore.get(key) || { attempts: 0 };
+  state.attempts += 1;
+
+  if (state.attempts >= 8) {
+    state.lockUntil = now + 15 * 60 * 1000;
+    state.attempts = 0;
+  }
+
+  loginFailureStore.set(key, state);
+}
+
+function clearFailedLogins(key: string): void {
+  loginFailureStore.delete(key);
+}
+
+const SESSION_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function getSessionSecret(): string {
+  return process.env.SESSION_SECRET || "";
+}
+
+function base64UrlEncode(input: string): string {
+  return Buffer.from(input, "utf8").toString("base64url");
+}
+
+function base64UrlDecode(input: string): string {
+  return Buffer.from(input, "base64url").toString("utf8");
+}
+
+function createSessionToken(userId: string): string {
+  const secret = getSessionSecret();
+  if (!secret) return "";
+
+  const payload = {
+    userId,
+    exp: Date.now() + SESSION_TOKEN_TTL_MS,
+    nonce: randomBytes(8).toString("hex"),
+  };
+  const encodedPayload = base64UrlEncode(JSON.stringify(payload));
+  const signature = createHmac("sha256", secret).update(encodedPayload).digest("base64url");
+  return `${encodedPayload}.${signature}`;
+}
+
+function verifySessionToken(token: string): { valid: boolean; userId?: string } {
+  const secret = getSessionSecret();
+  if (!secret || !token) return { valid: false };
+
+  const [encodedPayload, signature] = token.split(".");
+  if (!encodedPayload || !signature) return { valid: false };
+
+  const expected = createHmac("sha256", secret).update(encodedPayload).digest("base64url");
+  const sigBuf = Buffer.from(signature);
+  const expBuf = Buffer.from(expected);
+  if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) {
+    return { valid: false };
+  }
+
+  try {
+    const payload = JSON.parse(base64UrlDecode(encodedPayload)) as { userId?: string; exp?: number };
+    if (!payload?.userId || !payload?.exp || payload.exp < Date.now()) {
+      return { valid: false };
+    }
+    return { valid: true, userId: String(payload.userId) };
+  } catch {
+    return { valid: false };
+  }
+}
+
+function extractBearerToken(req: Request): string {
+  const auth = String(req.headers.authorization || "");
+  if (!auth.toLowerCase().startsWith("bearer ")) return "";
+  return auth.slice(7).trim();
+}
+
+function requireUserSession(selector: (req: Request) => unknown) {
+  return (req: Request, res: Response, next: any) => {
+    const raw = selector(req);
+    const expectedUserId = Array.isArray(raw) ? String(raw[0] || "").trim() : String(raw || "").trim();
+    if (!expectedUserId) {
+      return res.status(400).json({ error: "User ID is required" });
+    }
+
+    const token = extractBearerToken(req);
+    const verified = verifySessionToken(token);
+    if (!verified.valid || !verified.userId || verified.userId !== expectedUserId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    next();
+  };
+}
 
 function generateOTP(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
@@ -641,11 +795,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/auth/signup", async (req: Request, res: Response) => {
+  app.post("/api/auth/signup", authRateLimit, async (req: Request, res: Response) => {
     try {
       if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
 
-      const email = String(req.body?.email || "").trim().toLowerCase();
+      const email = normalizeEmail(req.body?.email);
       const password = String(req.body?.password || "");
       const name = String(req.body?.name || "").trim();
 
@@ -653,8 +807,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "Name, email and password are required" });
       }
 
-      if (password.length < 6) {
-        return res.status(400).json({ error: "Password must be at least 6 characters" });
+      if (!isValidEmail(email)) {
+        return res.status(400).json({ error: "Please enter a valid email" });
+      }
+
+      if (!isStrongPassword(password)) {
+        return res.status(400).json({ error: "Password must be at least 8 chars and include uppercase, lowercase, number, and symbol" });
       }
 
       const existing = await pgPool.query("SELECT id FROM app_users WHERE email = $1 LIMIT 1", [email]);
@@ -715,6 +873,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           name: user.name || name,
           createdAt: user.created_at,
         },
+        sessionToken: createSessionToken(String(user.id)),
       });
     } catch (error) {
       console.error("Signup failed:", error);
@@ -722,15 +881,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/auth/login", async (req: Request, res: Response) => {
+  app.post("/api/auth/login", authRateLimit, async (req: Request, res: Response) => {
     try {
       if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
 
-      const email = String(req.body?.email || "").trim().toLowerCase();
+      const email = normalizeEmail(req.body?.email);
       const password = String(req.body?.password || "");
 
       if (!email || !password) {
         return res.status(400).json({ error: "Email and password are required" });
+      }
+
+      const authKey = getAuthAttemptKey(req, email);
+      const lock = getLockState(authKey);
+      if (lock.locked) {
+        await sleep(300 + Math.floor(Math.random() * 200));
+        return res.status(429).json({ error: "Too many login attempts. Please try again later." });
       }
 
       const result = await pgPool.query(
@@ -738,14 +904,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         [email]
       );
 
-      if (!result.rowCount) {
-        return res.status(401).json({ error: "Invalid email or password" });
+      const row = result.rowCount ? result.rows[0] : null;
+      const passwordOk = row ? verifyPassword(password, row.password_hash) : false;
+      if (!passwordOk) {
+        recordFailedLogin(authKey);
+        await sleep(300 + Math.floor(Math.random() * 200));
+        return res.status(401).json({ error: "Invalid credentials" });
       }
 
-      const row = result.rows[0];
-      if (!verifyPassword(password, row.password_hash)) {
-        return res.status(401).json({ error: "Invalid email or password" });
-      }
+      clearFailedLogins(authKey);
 
       return res.json({
         user: {
@@ -754,6 +921,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           name: row.name || row.email.split("@")[0],
           createdAt: row.created_at,
         },
+        sessionToken: createSessionToken(String(row.id)),
       });
     } catch (error) {
       console.error("Login failed:", error);
@@ -766,7 +934,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ ok: true, service: "nomad-connect-api" });
   });
 
-    app.get("/api/ai/ping", async (_req: Request, res: Response) => {
+  const AI_ADVISOR_ENABLED = process.env.ENABLE_AI_ADVISOR === "true";
+
+  app.get("/api/ai/ping", async (_req: Request, res: Response) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     try {
       const reply = await callGroqChat([{ role: "user", content: "ping" }]);
       res.json({ ok: true, response: reply });
@@ -778,9 +951,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // AI Van Build Chat endpoint
   app.get("/api/ai/chat", (_req: Request, res: Response) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     res.status(405).json({ error: "Use POST /api/ai/chat with { messages: [...] }" });
   });
   app.post("/api/ai/chat", async (req: Request, res: Response) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     try {
       const { messages, systemPrompt } = req.body;
 
@@ -807,11 +986,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // AI Photo Analysis endpoint (disabled for Groq-only backend)
   app.post("/api/ai/analyze-photo", (_req: Request, res: Response) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     res.status(501).json({ error: "Photo analysis is not available in this build." });
   });
 
   // AI Cost Estimator endpoint using Groq
   app.post("/api/ai/estimate-cost", async (req: Request, res: Response) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     try {
       const { vanDetails } = req.body;
 
@@ -845,6 +1030,9 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
 
   // AI Van Image Generation endpoint (disabled for Groq-only backend)
   app.post("/api/ai/generate-van-image", (_req: Request, res: Response) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     res.status(501).json({ error: "Image generation is not available in this build." });
   });
 
@@ -852,6 +1040,9 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
 
   // Get all chat sessions for a user
   app.get("/api/ai/sessions/:userId", async (req: Request, res: Response) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     const { userId } = req.params;
     
     if (!userId) {
@@ -875,6 +1066,9 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
 
   // Create a new chat session
   app.post("/api/ai/sessions", async (req: Request, res: Response) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     const { id, userId, title, messages } = req.body;
     
     if (!id || !userId) {
@@ -906,6 +1100,9 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
 
   // Update a chat session
   app.put("/api/ai/sessions/:sessionId", async (req: Request, res: Response) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     const { sessionId } = req.params;
     const { title, messages } = req.body;
     
@@ -942,6 +1139,9 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
 
   // Delete a chat session
   app.delete("/api/ai/sessions/:sessionId", async (req: Request, res: Response) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     const { sessionId } = req.params;
     
     if (!sessionId) {
@@ -1006,7 +1206,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
     }
   });
 
-  app.post("/api/activities", async (req: Request, res: Response) => {
+  app.post("/api/activities", requireUserSession((req) => req.body?.user?.id), async (req: Request, res: Response) => {
     const { activity, user } = req.body as { activity?: Partial<Activity>; user?: ActivityUser };
 
     if (!activity || !user?.id || !user?.name) {
@@ -1066,7 +1266,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
     }
   });
 
-  app.post("/api/activities/:activityId/join", async (req: Request, res: Response) => {
+  app.post("/api/activities/:activityId/join", requireUserSession((req) => req.body?.user?.id), async (req: Request, res: Response) => {
     const { activityId } = req.params;
     const { user } = req.body as { user?: ActivityUser };
 
@@ -1106,7 +1306,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
     }
   });
 
-  app.delete("/api/activities/:activityId", async (req: Request, res: Response) => {
+  app.delete("/api/activities/:activityId", requireUserSession((req) => req.body?.userId), async (req: Request, res: Response) => {
     const { activityId } = req.params;
     const { userId } = req.body as { userId?: string };
 
@@ -1138,10 +1338,27 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
   });
 
   // Get messages for an activity (Supabase)
-  app.get("/api/activities/:activityId/messages", async (req: Request, res: Response) => {
+  app.get("/api/activities/:activityId/messages", requireUserSession((req) => req.query.userId), async (req: Request, res: Response) => {
     const { activityId } = req.params;
+    const userId = Array.isArray(req.query.userId) ? String(req.query.userId[0] || "") : String(req.query.userId || "");
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
     try {
       const sb = getSupabase();
+      const { data: activityRow, error: activityErr } = await sb
+        .from('activities')
+        .select('host_id, attendee_ids')
+        .eq('id', activityId)
+        .single();
+      if (activityErr || !activityRow) {
+        return res.status(404).json({ error: "Activity not found" });
+      }
+      const attendeeIds = Array.isArray(activityRow.attendee_ids) ? activityRow.attendee_ids : [];
+      if (String(activityRow.host_id) !== userId && !attendeeIds.includes(userId)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
       const { data, error } = await sb
         .from('activity_chat_messages')
         .select('*')
@@ -1179,7 +1396,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
   });
 
   // Send a message to activity chat (Supabase)
-  app.post("/api/activities/:activityId/messages", async (req: Request, res: Response) => {
+  app.post("/api/activities/:activityId/messages", requireUserSession((req) => req.body?.senderId), async (req: Request, res: Response) => {
     const { activityId } = req.params;
     const { senderId, senderName, senderPhoto, type, content, photoUrl, fileUrl, fileName, audioUrl, audioDuration, replyTo, location, isModeratorMessage } = req.body;
 
@@ -1241,12 +1458,26 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
   });
 
   // Pin/unpin a message (moderator only) - Supabase
-  app.patch("/api/activities/:activityId/messages/:messageId/pin", async (req: Request, res: Response) => {
-    const { messageId } = req.params;
-    const { pin } = req.body;
+  app.patch("/api/activities/:activityId/messages/:messageId/pin", requireUserSession((req) => req.body?.userId), async (req: Request, res: Response) => {
+    const { activityId, messageId } = req.params;
+    const { userId, pin } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
 
     try {
       const sb = getSupabase();
+      const { data: modRows, error: modErr } = await sb
+        .from('activity_moderators')
+        .select('id')
+        .eq('activity_id', activityId)
+        .eq('user_id', userId)
+        .limit(1);
+      if (modErr) throw modErr;
+      if (!modRows || modRows.length === 0) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
       const { data, error } = await sb
         .from('activity_chat_messages')
         .update({ is_pinned: !!pin })
@@ -1274,12 +1505,31 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
   });
 
   // Edit a message (owner only) - Supabase
-  app.put("/api/activities/:activityId/messages/:messageId", async (req: Request, res: Response) => {
+  app.put("/api/activities/:activityId/messages/:messageId", requireUserSession((req) => req.body?.userId), async (req: Request, res: Response) => {
     const { messageId } = req.params;
-    const { content } = req.body;
+    const { content, userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
 
     try {
       const sb = getSupabase();
+      const { data: ownerRow, error: ownerErr } = await sb
+        .from('activity_chat_messages')
+        .select('sender_id')
+        .eq('id', messageId)
+        .single();
+      if (ownerErr) {
+        if (ownerErr.code === 'PGRST116') {
+          return res.status(404).json({ error: "Message not found" });
+        }
+        throw ownerErr;
+      }
+      if (String(ownerRow?.sender_id || '') !== String(userId)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
       const { data, error } = await sb
         .from('activity_chat_messages')
         .update({ content, edited_at: new Date().toISOString() })
@@ -1307,7 +1557,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
   });
 
   // React to a message - Supabase
-  app.post("/api/activities/:activityId/messages/:messageId/react", async (req: Request, res: Response) => {
+  app.post("/api/activities/:activityId/messages/:messageId/react", requireUserSession((req) => req.body?.userId), async (req: Request, res: Response) => {
     const { messageId } = req.params;
     const { userId, emoji } = req.body as { userId?: string; emoji?: string };
 
@@ -1319,7 +1569,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
       const sb = getSupabase();
       const { data: msgData, error: getError } = await sb
         .from('activity_chat_messages')
-        .select('reactions')
+        .select('reactions, activity_id')
         .eq('id', messageId)
         .single();
 
@@ -1330,6 +1580,19 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
         throw getError;
       }
 
+      const { data: activityRow, error: activityErr } = await sb
+        .from('activities')
+        .select('host_id, attendee_ids')
+        .eq('id', (msgData as any).activity_id)
+        .single();
+      if (activityErr || !activityRow) {
+        return res.status(404).json({ error: "Activity not found" });
+      }
+      const attendeeIds = Array.isArray(activityRow.attendee_ids) ? activityRow.attendee_ids : [];
+      const isMember = String(activityRow.host_id) === String(userId) || attendeeIds.includes(String(userId));
+      if (!isMember) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
       const reactions: Record<string, string[]> = msgData.reactions || {};
       const current = new Set(reactions[emoji] || []);
 
@@ -1359,11 +1622,42 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
   });
 
   // Delete a message (moderator or owner) - Supabase
-  app.delete("/api/activities/:activityId/messages/:messageId", async (req: Request, res: Response) => {
-    const { messageId } = req.params;
+  app.delete("/api/activities/:activityId/messages/:messageId", requireUserSession((req) => req.query.userId), async (req: Request, res: Response) => {
+    const { activityId, messageId } = req.params;
+    const userId = Array.isArray(req.query.userId) ? String(req.query.userId[0] || "") : String(req.query.userId || "");
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
 
     try {
       const sb = getSupabase();
+      const { data: msgRow, error: msgErr } = await sb
+        .from('activity_chat_messages')
+        .select('sender_id')
+        .eq('id', messageId)
+        .single();
+      if (msgErr) {
+        if (msgErr.code === 'PGRST116') {
+          return res.status(404).json({ error: "Message not found" });
+        }
+        throw msgErr;
+      }
+
+      let canDelete = String(msgRow?.sender_id || '') === userId;
+      if (!canDelete) {
+        const { data: modRows, error: modErr } = await sb
+          .from('activity_moderators')
+          .select('id')
+          .eq('activity_id', activityId)
+          .eq('user_id', userId)
+          .limit(1);
+        if (modErr) throw modErr;
+        canDelete = !!(modRows && modRows.length > 0);
+      }
+      if (!canDelete) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
       const { data, error } = await sb
         .from('activity_chat_messages')
         .update({ deleted_at: new Date().toISOString() })
@@ -1383,10 +1677,26 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
   });
 
   // Get moderators for an activity
-  app.get("/api/activities/:activityId/moderators", async (req: Request, res: Response) => {
+  app.get("/api/activities/:activityId/moderators", requireUserSession((req) => req.query.userId), async (req: Request, res: Response) => {
     const { activityId } = req.params;
+    const userId = Array.isArray(req.query.userId) ? String(req.query.userId[0] || "") : String(req.query.userId || "");
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
     try {
       const sb = getSupabase();
+      const { data: activityRow, error: activityErr } = await sb
+        .from('activities')
+        .select('host_id, attendee_ids')
+        .eq('id', activityId)
+        .single();
+      if (activityErr || !activityRow) {
+        return res.status(404).json({ error: "Activity not found" });
+      }
+      const attendeeIds = Array.isArray(activityRow.attendee_ids) ? activityRow.attendee_ids : [];
+      if (String(activityRow.host_id) !== userId && !attendeeIds.includes(userId)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
       const { data, error } = await sb
         .from('activity_moderators')
         .select('*')
@@ -1406,12 +1716,27 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
   });
 
   // Add a moderator (host only)
-  app.post("/api/activities/:activityId/moderators", async (req: Request, res: Response) => {
+  app.post("/api/activities/:activityId/moderators", requireUserSession((req) => req.body?.requesterId), async (req: Request, res: Response) => {
     const { activityId } = req.params;
-    const { userId, isHost } = req.body;
+    const { requesterId, userId, isHost } = req.body;
+
+    if (!requesterId || !userId) {
+      return res.status(400).json({ error: "requesterId and userId are required" });
+    }
 
     try {
       const sb = getSupabase();
+      const { data: activityRow, error: activityErr } = await sb
+        .from('activities')
+        .select('host_id')
+        .eq('id', activityId)
+        .single();
+      if (activityErr || !activityRow) {
+        return res.status(404).json({ error: "Activity not found" });
+      }
+      if (String(activityRow.host_id) !== String(requesterId)) {
+        return res.status(403).json({ error: "Only host can manage moderators" });
+      }
       const { data: existing } = await sb
         .from('activity_moderators')
         .select('id')
@@ -1443,11 +1768,26 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
   });
 
   // Remove a moderator (host only)
-  app.delete("/api/activities/:activityId/moderators/:userId", async (req: Request, res: Response) => {
+  app.delete("/api/activities/:activityId/moderators/:userId", requireUserSession((req) => req.query.requesterId), async (req: Request, res: Response) => {
     const { activityId, userId } = req.params;
+    const requesterId = Array.isArray(req.query.requesterId) ? String(req.query.requesterId[0] || "") : String(req.query.requesterId || "");
+    if (!requesterId) {
+      return res.status(400).json({ error: "requesterId is required" });
+    }
 
     try {
       const sb = getSupabase();
+      const { data: activityRow, error: activityErr } = await sb
+        .from('activities')
+        .select('host_id')
+        .eq('id', activityId)
+        .single();
+      if (activityErr || !activityRow) {
+        return res.status(404).json({ error: "Activity not found" });
+      }
+      if (String(activityRow.host_id) !== String(requesterId)) {
+        return res.status(403).json({ error: "Only host can manage moderators" });
+      }
       const { error } = await sb
         .from('activity_moderators')
         .delete()
@@ -1463,12 +1803,27 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
   });
 
   // Initialize host as moderator when activity chat is accessed
-  app.post("/api/activities/:activityId/init-chat", async (req: Request, res: Response) => {
+  app.post("/api/activities/:activityId/init-chat", requireUserSession((req) => req.body?.hostId), async (req: Request, res: Response) => {
     const { activityId } = req.params;
     const { hostId } = req.body;
 
+    if (!hostId) {
+      return res.status(400).json({ error: "hostId is required" });
+    }
+
     try {
       const sb = getSupabase();
+      const { data: activityRow, error: activityErr } = await sb
+        .from('activities')
+        .select('host_id')
+        .eq('id', activityId)
+        .single();
+      if (activityErr || !activityRow) {
+        return res.status(404).json({ error: "Activity not found" });
+      }
+      if (String(activityRow.host_id) !== String(hostId)) {
+        return res.status(403).json({ error: "Only host can initialize chat" });
+      }
       const { data: existing } = await sb
         .from('activity_moderators')
         .select('id')
@@ -1742,7 +2097,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
     }
   });
 
-  app.post("/api/feedback", async (req: Request, res: Response) => {
+  app.post("/api/feedback", feedbackRateLimit, async (req: Request, res: Response) => {
     const supportEmail = "nomadconnect611@gmail.com";
 
     try {
@@ -1851,28 +2206,38 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
   });
 
   // OTP Password Reset - Send OTP via EmailJS
-  app.post("/api/password-reset/send-otp", async (req: Request, res: Response) => {
+  app.post("/api/password-reset/send-otp", passwordResetRateLimit, async (req: Request, res: Response) => {
     try {
       const { email } = req.body;
-      
+
       if (!email) {
         return res.status(400).json({ error: "Email is required" });
       }
 
-      const normalizedEmail = email.toLowerCase().trim();
-      
-      // Generate a simple 6-digit code
-      const code = Math.floor(100000 + Math.random() * 900000).toString();
-      
-      // Store code for verification
-      otpStore.set(normalizedEmail, {
-        email: normalizedEmail,
-        code: code,
-        expiresAt: new Date(Date.now() + 10 * 60 * 1000),
-        used: false,
-      });
+      const normalizedEmail = normalizeEmail(email);
+      if (!isValidEmail(normalizedEmail)) {
+        return res.status(400).json({ error: "Please enter a valid email" });
+      }
 
-      let emailSent = false;
+      // Anti-enumeration: respond with success even if account doesn't exist.
+      let hasAccount = true;
+      if (pgPool) {
+        const existsRes = await pgPool.query("SELECT 1 FROM app_users WHERE email = $1 LIMIT 1", [normalizedEmail]);
+        hasAccount = Number(existsRes.rowCount || 0) > 0;
+      }
+
+      // Generate and store OTP only for known accounts.
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
+      if (hasAccount) {
+        otpStore.set(normalizedEmail, {
+          email: normalizedEmail,
+          code: code,
+          expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+          used: false,
+        });
+      }
+
+      let emailSent = !hasAccount;
 
       // Use EmailJS as primary email service
       const emailjsServiceId = process.env.EMAILJS_SERVICE_ID;
@@ -1933,12 +2298,12 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
       }
 
       if (!emailSent) {
-        return res.status(500).json({ error: "Failed to send email. Please check EmailJS credentials." });
+        return res.status(500).json({ error: "Failed to process request" });
       }
 
-      res.json({ 
-        success: true, 
-        message: "Code sent to your email"
+      res.json({
+        success: true,
+        message: "If an account exists for this email, a code has been sent."
       });
     } catch (error) {
       console.error("Send OTP error:", error);
@@ -1947,7 +2312,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
   });
 
   // OTP Password Reset - Verify OTP
-  app.post("/api/password-reset/verify-otp", async (req: Request, res: Response) => {
+  app.post("/api/password-reset/verify-otp", passwordResetRateLimit, async (req: Request, res: Response) => {
     try {
       const { email, code } = req.body;
 
@@ -1961,20 +2326,20 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
       const storedOtp = otpStore.get(normalizedEmail);
       
       if (!storedOtp) {
-        return res.status(400).json({ error: "No code found. Please request a new one." });
+        return res.status(400).json({ error: "Invalid or expired code" });
       }
 
       if (storedOtp.expiresAt < new Date()) {
         otpStore.delete(normalizedEmail);
-        return res.status(400).json({ error: "Code expired. Please request a new one." });
+        return res.status(400).json({ error: "Invalid or expired code" });
       }
 
       if (storedOtp.used) {
-        return res.status(400).json({ error: "Code already used. Please request a new one." });
+        return res.status(400).json({ error: "Invalid or expired code" });
       }
 
       if (storedOtp.code !== code.trim()) {
-        return res.status(400).json({ error: "Invalid code. Please check and try again." });
+        return res.status(400).json({ error: "Invalid or expired code" });
       }
 
       // Mark as verified (but not used yet - will be used when password is updated)
@@ -1993,7 +2358,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
   });
 
   // Password Reset - Update Password after OTP verification
-  app.post("/api/password-reset/update-password", async (req: Request, res: Response) => {
+  app.post("/api/password-reset/update-password", passwordResetRateLimit, async (req: Request, res: Response) => {
     try {
       const { email, newPassword } = req.body;
 
@@ -2001,11 +2366,11 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
         return res.status(400).json({ error: "Email and new password are required" });
       }
 
-      if (newPassword.length < 6) {
-        return res.status(400).json({ error: "Password must be at least 6 characters" });
+      if (!isStrongPassword(newPassword)) {
+        return res.status(400).json({ error: "Password must be at least 8 chars and include uppercase, lowercase, number, and symbol" });
       }
 
-      const normalizedEmail = email.toLowerCase().trim();
+      const normalizedEmail = normalizeEmail(email);
       const verifiedEntry = otpStore.get(normalizedEmail);
 
       if (!verifiedEntry || verifiedEntry.used) {
@@ -2028,7 +2393,8 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
       );
 
       if (!result.rowCount) {
-        return res.status(404).json({ error: "User not found" });
+        otpStore.delete(normalizedEmail);
+        return res.json({ success: true, message: "Password updated successfully" });
       }
 
       verifiedEntry.used = true;
@@ -2056,7 +2422,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
 
   // ==================== USER PROFILES ====================
 
-  app.post("/api/user-profiles/upsert", async (req: Request, res: Response) => {
+  app.post("/api/user-profiles/upsert", requireUserSession((req) => String(req.body?.id || "")), async (req: Request, res: Response) => {
     try {
       const { id, name, age, bio, interests, photos, location, intentMode, activePlan } = req.body;
       if (!id) return res.status(400).json({ error: "User ID is required" });
@@ -2225,7 +2591,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
 
   // ==================== EXPLOREX CORE FEATURES ====================
 
-  app.post("/api/explorex/intent/:userId", async (req: Request, res: Response) => {
+  app.post("/api/explorex/intent/:userId", requireUserSession((req) => req.params.userId), async (req: Request, res: Response) => {
     try {
       if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
       const userId = req.params.userId;
@@ -2243,7 +2609,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
     }
   });
 
-  app.get("/api/explorex/intent/:userId", async (req: Request, res: Response) => {
+  app.get("/api/explorex/intent/:userId", requireUserSession((req) => req.params.userId), async (req: Request, res: Response) => {
     try {
       if (!pgPool) return res.json({ mode: "explore_city" });
       const userId = req.params.userId;
@@ -2259,7 +2625,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
     }
   });
 
-  app.get("/api/explorex/plans/:userId", async (req: Request, res: Response) => {
+  app.get("/api/explorex/plans/:userId", requireUserSession((req) => req.params.userId), async (req: Request, res: Response) => {
     try {
       if (!pgPool) return res.json([]);
       const userId = req.params.userId;
@@ -2287,7 +2653,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
     }
   });
 
-  app.post("/api/explorex/plans/:userId", async (req: Request, res: Response) => {
+  app.post("/api/explorex/plans/:userId", requireUserSession((req) => req.params.userId), async (req: Request, res: Response) => {
     try {
       if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
       const userId = req.params.userId;
@@ -2325,7 +2691,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
     }
   });
 
-  app.post("/api/explorex/plans/:userId/:planId/activate", async (req: Request, res: Response) => {
+  app.post("/api/explorex/plans/:userId/:planId/activate", requireUserSession((req) => req.params.userId), async (req: Request, res: Response) => {
     try {
       if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
       const { userId, planId } = req.params;
@@ -2338,7 +2704,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
     }
   });
 
-  app.delete("/api/explorex/plans/:userId/:planId", async (req: Request, res: Response) => {
+  app.delete("/api/explorex/plans/:userId/:planId", requireUserSession((req) => req.params.userId), async (req: Request, res: Response) => {
     try {
       if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
       const { userId, planId } = req.params;
@@ -2453,7 +2819,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
     }
   });
 
-  app.get("/api/explorex/journey/:userId", async (req: Request, res: Response) => {
+  app.get("/api/explorex/journey/:userId", requireUserSession((req) => req.params.userId), async (req: Request, res: Response) => {
     try {
       if (!pgPool) return res.json([]);
       const userId = req.params.userId;
@@ -2472,7 +2838,7 @@ Base your estimates on current 2024-2025 market prices in the US. Be specific wi
     }
   });
 
-  app.get("/api/explorex/serendipity/:userId", async (req: Request, res: Response) => {
+  app.get("/api/explorex/serendipity/:userId", requireUserSession((req) => req.params.userId), async (req: Request, res: Response) => {
     try {
       const userId = req.params.userId;
       if (!userId) return res.status(400).json({ error: "User ID is required" });
@@ -2943,7 +3309,7 @@ Return ONLY this JSON structure:
     lifetime: -1,
   };
 
-  app.post("/api/radar/update-location", async (req: Request, res: Response) => {
+  app.post("/api/radar/update-location", requireUserSession((req) => req.body?.userId), async (req: Request, res: Response) => {
     try {
       const { userId, lat, lng } = req.body;
       if (!userId || lat === undefined || lng === undefined) {
@@ -2986,7 +3352,7 @@ Return ONLY this JSON structure:
     }
   });
 
-  app.post("/api/radar/scan", async (req: Request, res: Response) => {
+  app.post("/api/radar/scan", requireUserSession((req) => req.body?.userId), async (req: Request, res: Response) => {
     try {
       const { userId, lat, lng, radiusKm, tier } = req.body;
       if (!userId || lat === undefined || lng === undefined) {
@@ -3369,7 +3735,7 @@ Return ONLY this JSON structure:
     }
   });
 
-  app.post("/api/radar/toggle-visibility", async (req: Request, res: Response) => {
+  app.post("/api/radar/toggle-visibility", requireUserSession((req) => req.body?.userId), async (req: Request, res: Response) => {
     try {
       const { userId, isVisible } = req.body;
       if (!userId) return res.status(400).json({ error: "userId is required" });
@@ -3394,7 +3760,7 @@ Return ONLY this JSON structure:
 
   // ==================== RADAR CHAT REQUESTS ====================
 
-  app.post("/api/radar/chat-request", async (req: Request, res: Response) => {
+  app.post("/api/radar/chat-request", requireUserSession((req) => req.body?.senderId), async (req: Request, res: Response) => {
     try {
       const { senderId, receiverId, senderName, senderPhoto, receiverName, receiverPhoto, message } = req.body;
       if (!senderId || !receiverId) {
@@ -3472,7 +3838,7 @@ Return ONLY this JSON structure:
     }
   });
 
-  app.get("/api/radar/chat-requests/:userId", async (req: Request, res: Response) => {
+  app.get("/api/radar/chat-requests/:userId", requireUserSession((req) => req.params.userId), async (req: Request, res: Response) => {
     try {
       const userId = req.params.userId;
 
@@ -3518,16 +3884,29 @@ Return ONLY this JSON structure:
     }
   });
 
-  app.post("/api/radar/chat-request/:requestId/respond", async (req: Request, res: Response) => {
+  app.post("/api/radar/chat-request/:requestId/respond", requireUserSession((req) => req.body?.responderId), async (req: Request, res: Response) => {
     try {
-      const { action } = req.body;
+      const { action, responderId } = req.body;
       if (!['accepted', 'declined'].includes(action)) {
         return res.status(400).json({ error: "action must be 'accepted' or 'declined'" });
+      }
+      if (!responderId) {
+        return res.status(400).json({ error: "responderId is required" });
       }
 
       const requestId = req.params.requestId;
 
       if (pgPool) {
+        const ownershipRes = await pgPool.query(
+          `SELECT receiver_id FROM radar_chat_requests WHERE id = $1 LIMIT 1`,
+          [requestId]
+        );
+        if (!ownershipRes.rowCount) {
+          return res.status(404).json({ error: "Request not found" });
+        }
+        if (String(ownershipRes.rows[0].receiver_id) !== String(responderId)) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
         await pgPool.query(
           `UPDATE radar_chat_requests SET status = $2, updated_at = NOW() WHERE id = $1`,
           [requestId, action]
@@ -3554,6 +3933,19 @@ Return ONLY this JSON structure:
       }
 
       const sb = getSupabase();
+      const { data: ownershipRows, error: ownershipErr } = await sb
+        .from('radar_chat_requests')
+        .select('receiver_id')
+        .eq('id', requestId)
+        .limit(1);
+      if (ownershipErr) throw ownershipErr;
+      if (!ownershipRows || ownershipRows.length === 0) {
+        return res.status(404).json({ error: "Request not found" });
+      }
+      if (String(ownershipRows[0].receiver_id) !== String(responderId)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
       const { error } = await sb
         .from('radar_chat_requests')
         .update({ status: action, updated_at: new Date().toISOString() })
@@ -3914,20 +4306,16 @@ Badge assignment:
           return copy;
         };
 
+        const DISCOVER_TARGET_COUNT = 20;
         const shuffledReal = shuffle(realProfiles);
         const shuffledMock = shuffle(mockProfiles);
-        filtered = realProfiles.length > 0
-          ? [...shuffledReal, ...shuffledMock].slice(0, 30)
-          : shuffledMock.slice(0, 30);
 
-        // Always bias first cards toward real users for better UX
-        if (realProfiles.length > 0) {
-          filtered = [...filtered].sort((a: any, b: any) => {
-            const aMock = String(a.id).startsWith("mock");
-            const bMock = String(b.id).startsWith("mock");
-            if (aMock === bMock) return 0;
-            return aMock ? 1 : -1;
-          });
+        if (shuffledReal.length >= DISCOVER_TARGET_COUNT) {
+          // Once we have enough real users, do not show demo profiles.
+          filtered = shuffledReal.slice(0, DISCOVER_TARGET_COUNT);
+        } else {
+          const neededMocks = Math.max(0, DISCOVER_TARGET_COUNT - shuffledReal.length);
+          filtered = [...shuffledReal, ...shuffledMock.slice(0, neededMocks)];
         }
 
         const meta = await loadExploreXMetaForUsers(filtered.map((row: any) => String(row.id)));
@@ -4012,19 +4400,15 @@ Badge assignment:
         return copy;
       };
 
+      const DISCOVER_TARGET_COUNT = 20;
       const shuffledReal = shuffle(realProfiles);
       const shuffledMock = shuffle(mockProfiles);
-      filtered = realProfiles.length > 0
-        ? [...shuffledReal, ...shuffledMock].slice(0, 30)
-        : shuffledMock.slice(0, 30);
 
-      if (realProfiles.length > 0) {
-        filtered = [...filtered].sort((a: any, b: any) => {
-          const aMock = String(a.id).startsWith("mock");
-          const bMock = String(b.id).startsWith("mock");
-          if (aMock === bMock) return 0;
-          return aMock ? 1 : -1;
-        });
+      if (shuffledReal.length >= DISCOVER_TARGET_COUNT) {
+        filtered = shuffledReal.slice(0, DISCOVER_TARGET_COUNT);
+      } else {
+        const neededMocks = Math.max(0, DISCOVER_TARGET_COUNT - shuffledReal.length);
+        filtered = [...shuffledReal, ...shuffledMock.slice(0, neededMocks)];
       }
 
       const meta = await loadExploreXMetaForUsers((filtered || []).map((row: any) => String(row.id)));
@@ -4062,7 +4446,7 @@ Badge assignment:
     }
   });
 
-  app.post("/api/swipes", async (req: Request, res: Response) => {
+  app.post("/api/swipes", requireUserSession((req) => String(req.body?.swiperId || "")), async (req: Request, res: Response) => {
     try {
       const { swiperId, swipedId, direction } = req.body;
       if (!swiperId || !swipedId || !direction) {
@@ -4273,7 +4657,7 @@ Badge assignment:
     }
   });
 
-  app.get("/api/matches/:userId", async (req: Request, res: Response) => {
+  app.get("/api/matches/:userId", requireUserSession((req) => req.params.userId), async (req: Request, res: Response) => {
     try {
       const { userId } = req.params;
       if (!userId) return res.status(400).json({ error: "User ID is required" });
@@ -4440,7 +4824,7 @@ Badge assignment:
     }
   });
 
-  app.get("/api/swipes/liked/:userId", async (req: Request, res: Response) => {
+  app.get("/api/swipes/liked/:userId", requireUserSession((req) => req.params.userId), async (req: Request, res: Response) => {
     try {
       const { userId } = req.params;
 
@@ -4578,7 +4962,7 @@ Badge assignment:
     }
   });
 
-  app.post("/api/swipes/reset/:userId", async (req: Request, res: Response) => {
+  app.post("/api/swipes/reset/:userId", requireUserSession((req) => req.params.userId), async (req: Request, res: Response) => {
     try {
       const { userId } = req.params;
       if (!userId) return res.status(400).json({ error: "User ID required" });
@@ -5013,10 +5397,23 @@ Scoring rules:
 
   // ==================== CHAT MESSAGES (Supabase) ====================
 
-  app.get("/api/messages/:matchId", async (req: Request, res: Response) => {
+  app.get("/api/messages/:matchId", requireUserSession((req) => req.query.userId), async (req: Request, res: Response) => {
     const { matchId } = req.params;
+    const userId = Array.isArray(req.query.userId) ? String(req.query.userId[0] || "") : String(req.query.userId || "");
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
+
     try {
       if (pgPool) {
+        const membership = await pgPool.query(
+          `SELECT id FROM matches WHERE id = $1 AND (user_a_id = $2 OR user_b_id = $2) LIMIT 1`,
+          [matchId, userId]
+        );
+        if (!membership.rowCount) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+
         const result = await pgPool.query(
           `SELECT * FROM chat_messages WHERE match_id = $1 ORDER BY created_at ASC`,
           [matchId]
@@ -5025,6 +5422,17 @@ Scoring rules:
       }
 
       const sb = getSupabase();
+      const { data: memberRows, error: memberError } = await sb
+        .from('matches')
+        .select('id')
+        .eq('id', matchId)
+        .or(`user_a_id.eq.${userId},user_b_id.eq.${userId}`)
+        .limit(1);
+      if (memberError) throw memberError;
+      if (!memberRows || memberRows.length === 0) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
       const { data, error } = await sb
         .from('chat_messages')
         .select('*')
@@ -5038,15 +5446,27 @@ Scoring rules:
     }
   });
 
-  app.post("/api/messages/:matchId", async (req: Request, res: Response) => {
+  app.post("/api/messages/:matchId", requireUserSession((req) => req.body?.senderId), async (req: Request, res: Response) => {
     const { matchId } = req.params;
     const { senderId, content, type, photoUrl, fileUrl, fileName, audioUrl, audioDuration, replyTo, location } = req.body;
+
+    if (!senderId) {
+      return res.status(400).json({ error: "senderId is required" });
+    }
 
     const msgId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
     const now = new Date().toISOString();
 
     try {
       if (pgPool) {
+        const membership = await pgPool.query(
+          `SELECT id FROM matches WHERE id = $1 AND (user_a_id = $2 OR user_b_id = $2) LIMIT 1`,
+          [matchId, senderId]
+        );
+        if (!membership.rowCount) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+
         const result = await pgPool.query(
           `INSERT INTO chat_messages (
              id, match_id, sender_id, content, type, photo_url, file_url, file_name,
@@ -5075,6 +5495,17 @@ Scoring rules:
       }
 
       const sb = getSupabase();
+      const { data: memberRows, error: memberError } = await sb
+        .from('matches')
+        .select('id')
+        .eq('id', matchId)
+        .or(`user_a_id.eq.${senderId},user_b_id.eq.${senderId}`)
+        .limit(1);
+      if (memberError) throw memberError;
+      if (!memberRows || memberRows.length === 0) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
       const { data, error } = await sb
         .from('chat_messages')
         .insert({
@@ -5104,12 +5535,24 @@ Scoring rules:
     }
   });
 
-  app.patch("/api/messages/:messageId", async (req: Request, res: Response) => {
+  app.patch("/api/messages/:messageId", requireUserSession((req) => req.body?.userId), async (req: Request, res: Response) => {
     const { messageId } = req.params;
-    const { content } = req.body;
+    const { content, userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
 
     try {
       if (pgPool) {
+        const ownerRes = await pgPool.query(`SELECT sender_id FROM chat_messages WHERE id = $1 LIMIT 1`, [messageId]);
+        if (!ownerRes.rowCount) {
+          return res.status(404).json({ error: "Message not found" });
+        }
+        if (String(ownerRes.rows[0].sender_id) !== String(userId)) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+
         const result = await pgPool.query(
           `UPDATE chat_messages SET content = $1, edited_at = NOW() WHERE id = $2 RETURNING *`,
           [content, messageId]
@@ -5121,6 +5564,21 @@ Scoring rules:
       }
 
       const sb = getSupabase();
+      const { data: ownerRow, error: ownerErr } = await sb
+        .from('chat_messages')
+        .select('sender_id')
+        .eq('id', messageId)
+        .single();
+      if (ownerErr) {
+        if (ownerErr.code === 'PGRST116') {
+          return res.status(404).json({ error: "Message not found" });
+        }
+        throw ownerErr;
+      }
+      if (String(ownerRow?.sender_id || '') !== String(userId)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
       const { data, error } = await sb
         .from('chat_messages')
         .update({ content, edited_at: new Date().toISOString() })
@@ -5142,11 +5600,23 @@ Scoring rules:
     }
   });
 
-  app.delete("/api/messages/:messageId", async (req: Request, res: Response) => {
+  app.delete("/api/messages/:messageId", requireUserSession((req) => req.query.userId), async (req: Request, res: Response) => {
     const { messageId } = req.params;
+    const userId = Array.isArray(req.query.userId) ? String(req.query.userId[0] || "") : String(req.query.userId || "");
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
 
     try {
       if (pgPool) {
+        const ownerRes = await pgPool.query(`SELECT sender_id FROM chat_messages WHERE id = $1 LIMIT 1`, [messageId]);
+        if (!ownerRes.rowCount) {
+          return res.status(404).json({ error: "Message not found" });
+        }
+        if (String(ownerRes.rows[0].sender_id) !== String(userId)) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+
         const result = await pgPool.query(`DELETE FROM chat_messages WHERE id = $1 RETURNING id`, [messageId]);
         if (!result.rowCount) {
           return res.status(404).json({ error: "Message not found" });
@@ -5155,6 +5625,19 @@ Scoring rules:
       }
 
       const sb = getSupabase();
+      const { data: ownerRows, error: ownerError } = await sb
+        .from('chat_messages')
+        .select('sender_id')
+        .eq('id', messageId)
+        .limit(1);
+      if (ownerError) throw ownerError;
+      if (!ownerRows || ownerRows.length === 0) {
+        return res.status(404).json({ error: "Message not found" });
+      }
+      if (String(ownerRows[0].sender_id) !== String(userId)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
       const { data, error } = await sb
         .from('chat_messages')
         .delete()
@@ -5173,7 +5656,7 @@ Scoring rules:
     }
   });
 
-  app.patch("/api/messages/:messageId/reactions", async (req: Request, res: Response) => {
+  app.patch("/api/messages/:messageId/reactions", requireUserSession((req) => req.body?.userId), async (req: Request, res: Response) => {
     const { messageId } = req.params;
     const { userId, emoji } = req.body;
 
@@ -5183,9 +5666,18 @@ Scoring rules:
 
     try {
       if (pgPool) {
-        const msgRes = await pgPool.query(`SELECT reactions FROM chat_messages WHERE id = $1 LIMIT 1`, [messageId]);
+        const msgRes = await pgPool.query(`SELECT reactions, match_id FROM chat_messages WHERE id = $1 LIMIT 1`, [messageId]);
         if (!msgRes.rowCount) {
           return res.status(404).json({ error: "Message not found" });
+        }
+
+        const matchId = String(msgRes.rows[0].match_id || "");
+        const membership = await pgPool.query(
+          `SELECT id FROM matches WHERE id = $1 AND (user_a_id = $2 OR user_b_id = $2) LIMIT 1`,
+          [matchId, userId]
+        );
+        if (!membership.rowCount) {
+          return res.status(403).json({ error: "Forbidden" });
         }
 
         const reactions: Record<string, string[]> = msgRes.rows[0].reactions || {};
@@ -5210,7 +5702,7 @@ Scoring rules:
       const sb = getSupabase();
       const { data: msgData, error: getError } = await sb
         .from('chat_messages')
-        .select('reactions')
+        .select('reactions, match_id')
         .eq('id', messageId)
         .single();
 

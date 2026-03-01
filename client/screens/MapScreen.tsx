@@ -99,19 +99,27 @@ const buildOsmMapHtml = (
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
     const center = [${center.latitude}, ${center.longitude}];
-    const map = L.map('map').setView(center, 9);
+    const map = L.map('map', { zoomControl: false }).setView(center, 9);
+    L.control.zoom({ position: 'bottomright' }).addTo(map);
     function setCenter(lat, lng, zoom) {
       map.setView([lat, lng], zoom || map.getZoom());
     }
     window.setCenter = setCenter;
-    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
     const markers = ${safeMarkers};
     markers.forEach(m => {
-      const color = m.type === 'activity' ? '#F59E0B' : (m.type === 'user' ? '#22C55E' : '#38BDF8');
-      const marker = L.circleMarker([m.latitude, m.longitude], { radius: 8, color, fillColor: color, fillOpacity: 0.9 }).addTo(map);
+      const color = m.type === 'activity' ? '#2563EB' : (m.type === 'user' ? '#16A34A' : '#F59E0B');
+      const marker = L.circleMarker([m.latitude, m.longitude], {
+        radius: 7,
+        color: '#FFFFFF',
+        weight: 2,
+        fillColor: color,
+        fillOpacity: 0.95
+      }).addTo(map);
       marker.bindPopup(m.title);
       marker.on('click', () => {
         if (window.ReactNativeWebView) {
@@ -136,7 +144,7 @@ const { width, height } = Dimensions.get("window");
 
 export default function MapScreen({ visible = true, onClose, initialFilter = "all" }: Props) {
   const insets = useSafeAreaInsets();
-  const { theme, isDark } = useTheme();
+  const { theme } = useTheme();
   const { activities, profiles } = useData();
   const { user } = useAuth();
   const { showAlert } = useAlert();

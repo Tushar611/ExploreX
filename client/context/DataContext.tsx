@@ -396,7 +396,7 @@ const MOCK_FORUM_POSTS: ForumPost[] = [
 ];
 
 export function DataProvider({ children }: { children: ReactNode }) {
-  const { user } = useAuth();
+  const { user, session } = useAuth();
   const [profiles, setProfiles] = useState<SwipeCard[]>([]);
   const [matches, setMatches] = useState<Match[]>([]);
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
@@ -499,12 +499,25 @@ export function DataProvider({ children }: { children: ReactNode }) {
       return latest ? { ...match, lastMessage: latest } : match;
     });
   };
-  const fetchJsonWithTimeout = async <T,>(url: URL, fallback: T, timeoutMs = 6000): Promise<T> => {
+  const authHeaders = () => {
+    const headers: Record<string, string> = {};
+    if (session?.sessionToken) {
+      headers.Authorization = `Bearer ${session.sessionToken}`;
+    }
+    return headers;
+  };
+
+  const jsonAuthHeaders = () => ({
+    "Content-Type": "application/json",
+    ...authHeaders(),
+  });
+
+  const fetchJsonWithTimeout = async <T,>(url: URL, fallback: T, timeoutMs = 6000, headers: Record<string, string> = {}): Promise<T> => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const response = await fetch(url.toString(), { signal: controller.signal });
+      const response = await fetch(url.toString(), { signal: controller.signal, headers });
       if (!response.ok) return fallback;
       return (await response.json()) as T;
     } catch {
@@ -561,8 +574,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
       const [discoverRes, matchesRes, likedRes, loadedActivities] = await Promise.all([
         fetchJsonWithTimeout<SwipeCard[]>(new URL(`/api/discover/profiles/${userId}`, baseUrl), [], 7000),
-        fetchJsonWithTimeout<Match[]>(new URL(`/api/matches/${userId}`, baseUrl), [], 7000),
-        fetchJsonWithTimeout<User[]>(new URL(`/api/swipes/liked/${userId}`, baseUrl), [], 7000),
+        fetchJsonWithTimeout<Match[]>(new URL(`/api/matches/${userId}`, baseUrl), [], 7000, authHeaders()),
+        fetchJsonWithTimeout<User[]>(new URL(`/api/swipes/liked/${userId}`, baseUrl), [], 7000, authHeaders()),
         fetchActivitiesFromAPI(),
       ]);
 
@@ -599,10 +612,13 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
       const messageEntries = await Promise.all(
         mergedMatches.map(async (match) => {
+          const messagesUrl = new URL(`/api/messages/${match.id}`, baseUrl);
+          messagesUrl.searchParams.set("userId", userId);
           const serverRows = await fetchJsonWithTimeout<any[]>(
-            new URL(`/api/messages/${match.id}`, baseUrl),
+            messagesUrl,
             [],
-            4000
+            4000,
+            authHeaders()
           );
           const serverMessages: Message[] = (serverRows || []).map(mapApiMessageToClient);
           const localForMatch = loadedMessages[match.id] || [];
@@ -656,7 +672,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
       fetch(new URL("/api/swipes", getApiUrl()).toString(), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: jsonAuthHeaders(),
         body: JSON.stringify({ swiperId: user.id, swipedId: userId, direction: "right" }),
       }).catch(() => {});
 
@@ -667,7 +683,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       const baseUrl = getApiUrl();
       const response = await fetch(new URL("/api/swipes", baseUrl).toString(), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: jsonAuthHeaders(),
         body: JSON.stringify({ swiperId: user.id, swipedId: userId, direction: "right" }),
       });
 
@@ -700,7 +716,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       const baseUrl = getApiUrl();
       await fetch(new URL("/api/swipes", baseUrl).toString(), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: jsonAuthHeaders(),
         body: JSON.stringify({ swiperId: user.id, swipedId: userId, direction: "left" }),
       });
     } catch (error) {
@@ -744,7 +760,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       const baseUrl = getApiUrl();
       const response = await fetch(new URL(`/api/messages/${matchId}`, baseUrl).toString(), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: jsonAuthHeaders(),
         body: JSON.stringify({
           senderId: user.id,
           content,
@@ -810,7 +826,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         new URL("/api/activities", baseUrl).toString(),
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: jsonAuthHeaders(),
           body: JSON.stringify({
             activity: {
               title: activityData.title,
@@ -872,7 +888,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         new URL(`/api/activities/${activityId}/join`, baseUrl).toString(),
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: jsonAuthHeaders(),
           body: JSON.stringify({
             user: {
               id: user.id,
@@ -919,7 +935,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         new URL(`/api/activities/${activityId}`, baseUrl).toString(),
         {
           method: "DELETE",
-          headers: { "Content-Type": "application/json" },
+          headers: jsonAuthHeaders(),
           body: JSON.stringify({ userId: user.id }),
         }
       );
@@ -986,8 +1002,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
       const baseUrl = getApiUrl();
       const response = await fetch(new URL(`/api/messages/${messageId}`, baseUrl).toString(), {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: newContent }),
+        headers: jsonAuthHeaders(),
+        body: JSON.stringify({ content: newContent, userId: user.id }),
       });
       if (response.ok) {
         const updated = await response.json();
@@ -1024,8 +1040,11 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
     try {
       const baseUrl = getApiUrl();
-      await fetch(new URL(`/api/messages/${messageId}`, baseUrl).toString(), {
+      const deleteUrl = new URL(`/api/messages/${messageId}`, baseUrl);
+      deleteUrl.searchParams.set("userId", user.id);
+      await fetch(deleteUrl.toString(), {
         method: "DELETE",
+        headers: authHeaders(),
       });
     } catch (error) {
       console.error("Delete message API error:", error);
@@ -1053,7 +1072,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       const baseUrl = getApiUrl();
       const response = await fetch(new URL(`/api/messages/${messageId}/reactions`, baseUrl).toString(), {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: jsonAuthHeaders(),
         body: JSON.stringify({ userId: user.id, emoji }),
       });
 
@@ -1146,7 +1165,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     const fetchLiked = async () => {
       try {
         const baseUrl = getApiUrl();
-        const res = await fetch(new URL(`/api/swipes/liked/${user.id}`, baseUrl).toString());
+        const res = await fetch(new URL(`/api/swipes/liked/${user.id}`, baseUrl).toString(), { headers: authHeaders() });
         if (res.ok) {
           const data = await res.json();
           setLikedProfilesList(data || []);

@@ -6,6 +6,7 @@ import { User } from "@/types";
 
 interface LocalSession {
   user: { id: string; email: string; name?: string };
+  sessionToken?: string;
 }
 
 interface AuthContextType {
@@ -83,7 +84,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const isAbortError = (error: unknown): boolean =>
     error instanceof Error && error.name === "AbortError";
 
-  const upsertProfileToServer = async (profile: User) => {
+  const getAuthHeaders = (sessionToken?: string) => {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (sessionToken) {
+      headers.Authorization = `Bearer ${sessionToken}`;
+    }
+    return headers;
+  };
+
+  const upsertProfileToServer = async (profile: User, sessionToken?: string) => {
     try {
       const { getApiUrl } = await import("@/lib/query-client");
       const baseUrl = getApiUrl();
@@ -93,7 +102,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         url.toString(),
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: getAuthHeaders(sessionToken),
           body: JSON.stringify({
             id: profile.id,
             name: profile.name,
@@ -134,7 +143,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           id: parsed.user.id,
           email: parsed.user.email,
           name: parsed.user.name,
-        });
+        }, parsed.sessionToken);
       } catch (error) {
         console.error("Session restore error:", error);
       } finally {
@@ -163,7 +172,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   };
 
-  const loadProfile = async (userId: string, fallbackUser?: AuthUserLike): Promise<User | null> => {
+  const loadProfile = async (userId: string, fallbackUser?: AuthUserLike, sessionToken?: string): Promise<User | null> => {
     const requestId = ++loadRequestRef.current;
     try {
       const stored = await AsyncStorage.getItem(`${PROFILE_KEY}_${userId}`);
@@ -182,7 +191,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setIsLoading(false);
       }
       saveProfile(profile).catch(() => {});
-      upsertProfileToServer(profile).catch(() => {});
+      upsertProfileToServer(profile, sessionToken || session?.sessionToken).catch(() => {});
 
       (async () => {
         try {
@@ -251,11 +260,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           email: authUser.email || email.toLowerCase(),
           name: authUser.name,
         },
+        sessionToken: typeof data?.sessionToken === "string" ? data.sessionToken : undefined,
       };
 
       setSession(nextSession);
       await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(nextSession));
-      await loadProfile(authUser.id, authUser);
+      await loadProfile(authUser.id, authUser, nextSession.sessionToken);
 
       try {
         const { identifyUser } = await import("@/services/revenuecat");
@@ -299,6 +309,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           email: authUser.email || email.toLowerCase(),
           name: authUser.name || name,
         },
+        sessionToken: typeof data?.sessionToken === "string" ? data.sessionToken : undefined,
       };
 
       setSession(nextSession);
@@ -322,7 +333,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       setUser(newUser);
       await saveProfile(newUser);
-      upsertProfileToServer(newUser).catch(() => {});
+      upsertProfileToServer(newUser, nextSession.sessionToken).catch(() => {});
 
       try {
         const { identifyUser } = await import("@/services/revenuecat");
@@ -408,7 +419,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const updatedUser = { ...user, ...updates };
       setUser(updatedUser);
       await saveProfile(updatedUser);
-      await upsertProfileToServer(updatedUser);
+      await upsertProfileToServer(updatedUser, session?.sessionToken);
     } catch (error) {
       console.error("Update profile error:", error);
     }

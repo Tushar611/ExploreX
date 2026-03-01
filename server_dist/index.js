@@ -91,7 +91,59 @@ import * as fs from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import { Pool } from "pg";
 import multer from "multer";
-import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
+import { randomBytes, scryptSync, timingSafeEqual, createHmac } from "crypto";
+
+// server/security.ts
+function getClientIp(req) {
+  const header = req.headers["x-forwarded-for"];
+  const first = Array.isArray(header) ? header[0] : header;
+  if (typeof first === "string" && first.length > 0) {
+    return first.split(",")[0].trim();
+  }
+  return req.ip || req.socket.remoteAddress || "unknown";
+}
+function createRateLimiter(options) {
+  const buckets = /* @__PURE__ */ new Map();
+  const windowMs = Math.max(1e3, options.windowMs);
+  const max = Math.max(1, options.max);
+  const keyGenerator = options.keyGenerator || ((req) => getClientIp(req));
+  setInterval(() => {
+    const now = Date.now();
+    for (const [key, bucket] of buckets.entries()) {
+      if (bucket.resetAt <= now) buckets.delete(key);
+    }
+  }, Math.min(windowMs, 6e4)).unref();
+  return (req, res, next) => {
+    const now = Date.now();
+    const key = keyGenerator(req);
+    const existing = buckets.get(key);
+    if (!existing || existing.resetAt <= now) {
+      buckets.set(key, { count: 1, resetAt: now + windowMs });
+      res.setHeader("X-RateLimit-Limit", String(max));
+      res.setHeader("X-RateLimit-Remaining", String(max - 1));
+      res.setHeader("X-RateLimit-Reset", String(Math.ceil((now + windowMs) / 1e3)));
+      return next();
+    }
+    if (existing.count >= max) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((existing.resetAt - now) / 1e3));
+      res.setHeader("Retry-After", String(retryAfterSeconds));
+      res.setHeader("X-RateLimit-Limit", String(max));
+      res.setHeader("X-RateLimit-Remaining", "0");
+      res.setHeader("X-RateLimit-Reset", String(Math.ceil(existing.resetAt / 1e3)));
+      return res.status(429).json({
+        error: options.message || "Too many requests. Please try again later."
+      });
+    }
+    existing.count += 1;
+    buckets.set(key, existing);
+    res.setHeader("X-RateLimit-Limit", String(max));
+    res.setHeader("X-RateLimit-Remaining", String(Math.max(0, max - existing.count)));
+    res.setHeader("X-RateLimit-Reset", String(Math.ceil(existing.resetAt / 1e3)));
+    next();
+  };
+}
+
+// server/routes.ts
 async function callGroqChat(messages) {
   if (!groqApiKey) {
     throw new Error("Missing GROQ_API_KEY");
@@ -158,7 +210,132 @@ async function checkSupabaseTables() {
     }
   }
 }
+var authRateLimit = createRateLimiter({
+  windowMs: 15 * 60 * 1e3,
+  max: 25,
+  message: "Too many auth attempts. Please try again in 15 minutes."
+});
+var passwordResetRateLimit = createRateLimiter({
+  windowMs: 10 * 60 * 1e3,
+  max: 8,
+  message: "Too many password reset attempts. Please wait and try again."
+});
+var feedbackRateLimit = createRateLimiter({
+  windowMs: 10 * 60 * 1e3,
+  max: 6,
+  message: "Too many feedback submissions. Please wait before trying again."
+});
 var otpStore = /* @__PURE__ */ new Map();
+var loginFailureStore = /* @__PURE__ */ new Map();
+function sleep(ms) {
+  return new Promise((resolve3) => setTimeout(resolve3, ms));
+}
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+function isStrongPassword(password) {
+  if (password.length < 8) return false;
+  const hasUpper = /[A-Z]/.test(password);
+  const hasLower = /[a-z]/.test(password);
+  const hasDigit = /\d/.test(password);
+  const hasSpecial = /[^A-Za-z0-9]/.test(password);
+  return hasUpper && hasLower && hasDigit && hasSpecial;
+}
+function getAuthAttemptKey(req, email) {
+  const fwd = req.headers["x-forwarded-for"];
+  const ipRaw = Array.isArray(fwd) ? fwd[0] : fwd;
+  const ip = typeof ipRaw === "string" && ipRaw ? ipRaw.split(",")[0].trim() : req.ip || "unknown";
+  return `${email}::${ip}`;
+}
+function getLockState(key) {
+  const now = Date.now();
+  const state = loginFailureStore.get(key);
+  if (!state || !state.lockUntil) return { locked: false, remainingMs: 0 };
+  if (state.lockUntil <= now) {
+    loginFailureStore.delete(key);
+    return { locked: false, remainingMs: 0 };
+  }
+  return { locked: true, remainingMs: state.lockUntil - now };
+}
+function recordFailedLogin(key) {
+  const now = Date.now();
+  const state = loginFailureStore.get(key) || { attempts: 0 };
+  state.attempts += 1;
+  if (state.attempts >= 8) {
+    state.lockUntil = now + 15 * 60 * 1e3;
+    state.attempts = 0;
+  }
+  loginFailureStore.set(key, state);
+}
+function clearFailedLogins(key) {
+  loginFailureStore.delete(key);
+}
+var SESSION_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1e3;
+function getSessionSecret() {
+  return process.env.SESSION_SECRET || "";
+}
+function base64UrlEncode(input) {
+  return Buffer.from(input, "utf8").toString("base64url");
+}
+function base64UrlDecode(input) {
+  return Buffer.from(input, "base64url").toString("utf8");
+}
+function createSessionToken(userId) {
+  const secret = getSessionSecret();
+  if (!secret) return "";
+  const payload = {
+    userId,
+    exp: Date.now() + SESSION_TOKEN_TTL_MS,
+    nonce: randomBytes(8).toString("hex")
+  };
+  const encodedPayload = base64UrlEncode(JSON.stringify(payload));
+  const signature = createHmac("sha256", secret).update(encodedPayload).digest("base64url");
+  return `${encodedPayload}.${signature}`;
+}
+function verifySessionToken(token) {
+  const secret = getSessionSecret();
+  if (!secret || !token) return { valid: false };
+  const [encodedPayload, signature] = token.split(".");
+  if (!encodedPayload || !signature) return { valid: false };
+  const expected = createHmac("sha256", secret).update(encodedPayload).digest("base64url");
+  const sigBuf = Buffer.from(signature);
+  const expBuf = Buffer.from(expected);
+  if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) {
+    return { valid: false };
+  }
+  try {
+    const payload = JSON.parse(base64UrlDecode(encodedPayload));
+    if (!payload?.userId || !payload?.exp || payload.exp < Date.now()) {
+      return { valid: false };
+    }
+    return { valid: true, userId: String(payload.userId) };
+  } catch {
+    return { valid: false };
+  }
+}
+function extractBearerToken(req) {
+  const auth = String(req.headers.authorization || "");
+  if (!auth.toLowerCase().startsWith("bearer ")) return "";
+  return auth.slice(7).trim();
+}
+function requireUserSession(selector) {
+  return (req, res, next) => {
+    const raw = selector(req);
+    const expectedUserId = Array.isArray(raw) ? String(raw[0] || "").trim() : String(raw || "").trim();
+    if (!expectedUserId) {
+      return res.status(400).json({ error: "User ID is required" });
+    }
+    const token = extractBearerToken(req);
+    const verified = verifySessionToken(token);
+    if (!verified.valid || !verified.userId || verified.userId !== expectedUserId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    next();
+  };
+}
 var groqApiKey = process.env.GROQ_API_KEY || "";
 var pgPool = process.env.DATABASE_URL ? new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -528,17 +705,20 @@ async function registerRoutes(app2) {
       return res.status(500).json({ error: "Upload failed" });
     }
   });
-  app2.post("/api/auth/signup", async (req, res) => {
+  app2.post("/api/auth/signup", authRateLimit, async (req, res) => {
     try {
       if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
-      const email = String(req.body?.email || "").trim().toLowerCase();
+      const email = normalizeEmail(req.body?.email);
       const password = String(req.body?.password || "");
       const name = String(req.body?.name || "").trim();
       if (!email || !password || !name) {
         return res.status(400).json({ error: "Name, email and password are required" });
       }
-      if (password.length < 6) {
-        return res.status(400).json({ error: "Password must be at least 6 characters" });
+      if (!isValidEmail(email)) {
+        return res.status(400).json({ error: "Please enter a valid email" });
+      }
+      if (!isStrongPassword(password)) {
+        return res.status(400).json({ error: "Password must be at least 8 chars and include uppercase, lowercase, number, and symbol" });
       }
       const existing = await pgPool.query("SELECT id FROM app_users WHERE email = $1 LIMIT 1", [email]);
       if (existing.rowCount) {
@@ -591,39 +771,48 @@ async function registerRoutes(app2) {
           email: user.email,
           name: user.name || name,
           createdAt: user.created_at
-        }
+        },
+        sessionToken: createSessionToken(String(user.id))
       });
     } catch (error) {
       console.error("Signup failed:", error);
       return res.status(500).json({ error: "Signup failed" });
     }
   });
-  app2.post("/api/auth/login", async (req, res) => {
+  app2.post("/api/auth/login", authRateLimit, async (req, res) => {
     try {
       if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
-      const email = String(req.body?.email || "").trim().toLowerCase();
+      const email = normalizeEmail(req.body?.email);
       const password = String(req.body?.password || "");
       if (!email || !password) {
         return res.status(400).json({ error: "Email and password are required" });
+      }
+      const authKey = getAuthAttemptKey(req, email);
+      const lock = getLockState(authKey);
+      if (lock.locked) {
+        await sleep(300 + Math.floor(Math.random() * 200));
+        return res.status(429).json({ error: "Too many login attempts. Please try again later." });
       }
       const result = await pgPool.query(
         "SELECT id, email, name, password_hash, created_at FROM app_users WHERE email = $1 LIMIT 1",
         [email]
       );
-      if (!result.rowCount) {
-        return res.status(401).json({ error: "Invalid email or password" });
+      const row = result.rowCount ? result.rows[0] : null;
+      const passwordOk = row ? verifyPassword(password, row.password_hash) : false;
+      if (!passwordOk) {
+        recordFailedLogin(authKey);
+        await sleep(300 + Math.floor(Math.random() * 200));
+        return res.status(401).json({ error: "Invalid credentials" });
       }
-      const row = result.rows[0];
-      if (!verifyPassword(password, row.password_hash)) {
-        return res.status(401).json({ error: "Invalid email or password" });
-      }
+      clearFailedLogins(authKey);
       return res.json({
         user: {
           id: row.id,
           email: row.email,
           name: row.name || row.email.split("@")[0],
           createdAt: row.created_at
-        }
+        },
+        sessionToken: createSessionToken(String(row.id))
       });
     } catch (error) {
       console.error("Login failed:", error);
@@ -633,7 +822,11 @@ async function registerRoutes(app2) {
   app2.get("/api/health", (_req, res) => {
     res.json({ ok: true, service: "nomad-connect-api" });
   });
+  const AI_ADVISOR_ENABLED = process.env.ENABLE_AI_ADVISOR === "true";
   app2.get("/api/ai/ping", async (_req, res) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     try {
       const reply = await callGroqChat([{ role: "user", content: "ping" }]);
       res.json({ ok: true, response: reply });
@@ -643,9 +836,15 @@ async function registerRoutes(app2) {
     }
   });
   app2.get("/api/ai/chat", (_req, res) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     res.status(405).json({ error: "Use POST /api/ai/chat with { messages: [...] }" });
   });
   app2.post("/api/ai/chat", async (req, res) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     try {
       const { messages, systemPrompt } = req.body;
       if (!messages || !Array.isArray(messages)) {
@@ -667,9 +866,15 @@ async function registerRoutes(app2) {
     }
   });
   app2.post("/api/ai/analyze-photo", (_req, res) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     res.status(501).json({ error: "Photo analysis is not available in this build." });
   });
   app2.post("/api/ai/estimate-cost", async (req, res) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     try {
       const { vanDetails } = req.body;
       if (!vanDetails) {
@@ -699,9 +904,15 @@ ${vanDetails}` }
     }
   });
   app2.post("/api/ai/generate-van-image", (_req, res) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     res.status(501).json({ error: "Image generation is not available in this build." });
   });
   app2.get("/api/ai/sessions/:userId", async (req, res) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     const { userId } = req.params;
     if (!userId) {
       return res.status(400).json({ error: "User ID is required" });
@@ -717,6 +928,9 @@ ${vanDetails}` }
     }
   });
   app2.post("/api/ai/sessions", async (req, res) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     const { id, userId, title, messages } = req.body;
     if (!id || !userId) {
       return res.status(400).json({ error: "Session ID and user ID are required" });
@@ -740,6 +954,9 @@ ${vanDetails}` }
     }
   });
   app2.put("/api/ai/sessions/:sessionId", async (req, res) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     const { sessionId } = req.params;
     const { title, messages } = req.body;
     if (!sessionId) {
@@ -765,6 +982,9 @@ ${vanDetails}` }
     }
   });
   app2.delete("/api/ai/sessions/:sessionId", async (req, res) => {
+    if (!AI_ADVISOR_ENABLED) {
+      return res.status(410).json({ error: "AI Advisor is disabled in this build." });
+    }
     const { sessionId } = req.params;
     if (!sessionId) {
       return res.status(400).json({ error: "Session ID is required" });
@@ -811,7 +1031,7 @@ ${vanDetails}` }
       res.status(500).json({ error: "Failed to get activities" });
     }
   });
-  app2.post("/api/activities", async (req, res) => {
+  app2.post("/api/activities", requireUserSession((req) => req.body?.user?.id), async (req, res) => {
     const { activity, user } = req.body;
     if (!activity || !user?.id || !user?.name) {
       return res.status(400).json({ error: "Activity and user are required" });
@@ -863,7 +1083,7 @@ ${vanDetails}` }
       res.status(500).json({ error: "Failed to create activity" });
     }
   });
-  app2.post("/api/activities/:activityId/join", async (req, res) => {
+  app2.post("/api/activities/:activityId/join", requireUserSession((req) => req.body?.user?.id), async (req, res) => {
     const { activityId } = req.params;
     const { user } = req.body;
     if (!user?.id) {
@@ -889,7 +1109,7 @@ ${vanDetails}` }
       res.status(500).json({ error: "Failed to join activity" });
     }
   });
-  app2.delete("/api/activities/:activityId", async (req, res) => {
+  app2.delete("/api/activities/:activityId", requireUserSession((req) => req.body?.userId), async (req, res) => {
     const { activityId } = req.params;
     const { userId } = req.body;
     try {
@@ -909,10 +1129,22 @@ ${vanDetails}` }
       res.status(500).json({ error: "Failed to delete activity" });
     }
   });
-  app2.get("/api/activities/:activityId/messages", async (req, res) => {
+  app2.get("/api/activities/:activityId/messages", requireUserSession((req) => req.query.userId), async (req, res) => {
     const { activityId } = req.params;
+    const userId = Array.isArray(req.query.userId) ? String(req.query.userId[0] || "") : String(req.query.userId || "");
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
     try {
       const sb = getSupabase();
+      const { data: activityRow, error: activityErr } = await sb.from("activities").select("host_id, attendee_ids").eq("id", activityId).single();
+      if (activityErr || !activityRow) {
+        return res.status(404).json({ error: "Activity not found" });
+      }
+      const attendeeIds = Array.isArray(activityRow.attendee_ids) ? activityRow.attendee_ids : [];
+      if (String(activityRow.host_id) !== userId && !attendeeIds.includes(userId)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
       const { data, error } = await sb.from("activity_chat_messages").select("*").eq("activity_id", activityId).is("deleted_at", null).order("created_at", { ascending: true });
       if (error) throw error;
       const messages = (data || []).map((row) => ({
@@ -943,7 +1175,7 @@ ${vanDetails}` }
       res.json([]);
     }
   });
-  app2.post("/api/activities/:activityId/messages", async (req, res) => {
+  app2.post("/api/activities/:activityId/messages", requireUserSession((req) => req.body?.senderId), async (req, res) => {
     const { activityId } = req.params;
     const { senderId, senderName, senderPhoto, type, content, photoUrl, fileUrl, fileName, audioUrl, audioDuration, replyTo, location, isModeratorMessage } = req.body;
     const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -997,11 +1229,19 @@ ${vanDetails}` }
       res.status(500).json({ error: "Failed to send message" });
     }
   });
-  app2.patch("/api/activities/:activityId/messages/:messageId/pin", async (req, res) => {
-    const { messageId } = req.params;
-    const { pin } = req.body;
+  app2.patch("/api/activities/:activityId/messages/:messageId/pin", requireUserSession((req) => req.body?.userId), async (req, res) => {
+    const { activityId, messageId } = req.params;
+    const { userId, pin } = req.body;
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
     try {
       const sb = getSupabase();
+      const { data: modRows, error: modErr } = await sb.from("activity_moderators").select("id").eq("activity_id", activityId).eq("user_id", userId).limit(1);
+      if (modErr) throw modErr;
+      if (!modRows || modRows.length === 0) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
       const { data, error } = await sb.from("activity_chat_messages").update({ is_pinned: !!pin }).eq("id", messageId).select().single();
       if (error) {
         if (error.code === "PGRST116") {
@@ -1020,11 +1260,24 @@ ${vanDetails}` }
       res.status(500).json({ error: "Failed to pin message" });
     }
   });
-  app2.put("/api/activities/:activityId/messages/:messageId", async (req, res) => {
+  app2.put("/api/activities/:activityId/messages/:messageId", requireUserSession((req) => req.body?.userId), async (req, res) => {
     const { messageId } = req.params;
-    const { content } = req.body;
+    const { content, userId } = req.body;
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
     try {
       const sb = getSupabase();
+      const { data: ownerRow, error: ownerErr } = await sb.from("activity_chat_messages").select("sender_id").eq("id", messageId).single();
+      if (ownerErr) {
+        if (ownerErr.code === "PGRST116") {
+          return res.status(404).json({ error: "Message not found" });
+        }
+        throw ownerErr;
+      }
+      if (String(ownerRow?.sender_id || "") !== String(userId)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
       const { data, error } = await sb.from("activity_chat_messages").update({ content, edited_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", messageId).select().single();
       if (error) {
         if (error.code === "PGRST116") {
@@ -1043,7 +1296,7 @@ ${vanDetails}` }
       res.status(500).json({ error: "Failed to edit message" });
     }
   });
-  app2.post("/api/activities/:activityId/messages/:messageId/react", async (req, res) => {
+  app2.post("/api/activities/:activityId/messages/:messageId/react", requireUserSession((req) => req.body?.userId), async (req, res) => {
     const { messageId } = req.params;
     const { userId, emoji } = req.body;
     if (!userId || !emoji) {
@@ -1051,12 +1304,21 @@ ${vanDetails}` }
     }
     try {
       const sb = getSupabase();
-      const { data: msgData, error: getError } = await sb.from("activity_chat_messages").select("reactions").eq("id", messageId).single();
+      const { data: msgData, error: getError } = await sb.from("activity_chat_messages").select("reactions, activity_id").eq("id", messageId).single();
       if (getError) {
         if (getError.code === "PGRST116") {
           return res.status(404).json({ error: "Message not found" });
         }
         throw getError;
+      }
+      const { data: activityRow, error: activityErr } = await sb.from("activities").select("host_id, attendee_ids").eq("id", msgData.activity_id).single();
+      if (activityErr || !activityRow) {
+        return res.status(404).json({ error: "Activity not found" });
+      }
+      const attendeeIds = Array.isArray(activityRow.attendee_ids) ? activityRow.attendee_ids : [];
+      const isMember = String(activityRow.host_id) === String(userId) || attendeeIds.includes(String(userId));
+      if (!isMember) {
+        return res.status(403).json({ error: "Forbidden" });
       }
       const reactions = msgData.reactions || {};
       const current = new Set(reactions[emoji] || []);
@@ -1078,10 +1340,30 @@ ${vanDetails}` }
       res.status(500).json({ error: "Failed to react to message" });
     }
   });
-  app2.delete("/api/activities/:activityId/messages/:messageId", async (req, res) => {
-    const { messageId } = req.params;
+  app2.delete("/api/activities/:activityId/messages/:messageId", requireUserSession((req) => req.query.userId), async (req, res) => {
+    const { activityId, messageId } = req.params;
+    const userId = Array.isArray(req.query.userId) ? String(req.query.userId[0] || "") : String(req.query.userId || "");
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
     try {
       const sb = getSupabase();
+      const { data: msgRow, error: msgErr } = await sb.from("activity_chat_messages").select("sender_id").eq("id", messageId).single();
+      if (msgErr) {
+        if (msgErr.code === "PGRST116") {
+          return res.status(404).json({ error: "Message not found" });
+        }
+        throw msgErr;
+      }
+      let canDelete = String(msgRow?.sender_id || "") === userId;
+      if (!canDelete) {
+        const { data: modRows, error: modErr } = await sb.from("activity_moderators").select("id").eq("activity_id", activityId).eq("user_id", userId).limit(1);
+        if (modErr) throw modErr;
+        canDelete = !!(modRows && modRows.length > 0);
+      }
+      if (!canDelete) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
       const { data, error } = await sb.from("activity_chat_messages").update({ deleted_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", messageId).select("id");
       if (error) throw error;
       if (!data || data.length === 0) {
@@ -1093,10 +1375,22 @@ ${vanDetails}` }
       res.status(500).json({ error: "Failed to delete message" });
     }
   });
-  app2.get("/api/activities/:activityId/moderators", async (req, res) => {
+  app2.get("/api/activities/:activityId/moderators", requireUserSession((req) => req.query.userId), async (req, res) => {
     const { activityId } = req.params;
+    const userId = Array.isArray(req.query.userId) ? String(req.query.userId[0] || "") : String(req.query.userId || "");
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
     try {
       const sb = getSupabase();
+      const { data: activityRow, error: activityErr } = await sb.from("activities").select("host_id, attendee_ids").eq("id", activityId).single();
+      if (activityErr || !activityRow) {
+        return res.status(404).json({ error: "Activity not found" });
+      }
+      const attendeeIds = Array.isArray(activityRow.attendee_ids) ? activityRow.attendee_ids : [];
+      if (String(activityRow.host_id) !== userId && !attendeeIds.includes(userId)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
       const { data, error } = await sb.from("activity_moderators").select("*").eq("activity_id", activityId);
       if (error) throw error;
       const moderators = (data || []).map((row) => ({
@@ -1111,11 +1405,21 @@ ${vanDetails}` }
       res.status(500).json({ error: "Failed to get moderators" });
     }
   });
-  app2.post("/api/activities/:activityId/moderators", async (req, res) => {
+  app2.post("/api/activities/:activityId/moderators", requireUserSession((req) => req.body?.requesterId), async (req, res) => {
     const { activityId } = req.params;
-    const { userId, isHost } = req.body;
+    const { requesterId, userId, isHost } = req.body;
+    if (!requesterId || !userId) {
+      return res.status(400).json({ error: "requesterId and userId are required" });
+    }
     try {
       const sb = getSupabase();
+      const { data: activityRow, error: activityErr } = await sb.from("activities").select("host_id").eq("id", activityId).single();
+      if (activityErr || !activityRow) {
+        return res.status(404).json({ error: "Activity not found" });
+      }
+      if (String(activityRow.host_id) !== String(requesterId)) {
+        return res.status(403).json({ error: "Only host can manage moderators" });
+      }
       const { data: existing } = await sb.from("activity_moderators").select("id").eq("activity_id", activityId).eq("user_id", userId);
       if (existing && existing.length > 0) {
         return res.json({ activityId, userId, isHost: isHost || false, addedAt: (/* @__PURE__ */ new Date()).toISOString() });
@@ -1136,10 +1440,21 @@ ${vanDetails}` }
       res.status(500).json({ error: "Failed to add moderator" });
     }
   });
-  app2.delete("/api/activities/:activityId/moderators/:userId", async (req, res) => {
+  app2.delete("/api/activities/:activityId/moderators/:userId", requireUserSession((req) => req.query.requesterId), async (req, res) => {
     const { activityId, userId } = req.params;
+    const requesterId = Array.isArray(req.query.requesterId) ? String(req.query.requesterId[0] || "") : String(req.query.requesterId || "");
+    if (!requesterId) {
+      return res.status(400).json({ error: "requesterId is required" });
+    }
     try {
       const sb = getSupabase();
+      const { data: activityRow, error: activityErr } = await sb.from("activities").select("host_id").eq("id", activityId).single();
+      if (activityErr || !activityRow) {
+        return res.status(404).json({ error: "Activity not found" });
+      }
+      if (String(activityRow.host_id) !== String(requesterId)) {
+        return res.status(403).json({ error: "Only host can manage moderators" });
+      }
       const { error } = await sb.from("activity_moderators").delete().eq("activity_id", activityId).eq("user_id", userId).eq("is_host", false);
       if (error) throw error;
       res.json({ success: true });
@@ -1148,11 +1463,21 @@ ${vanDetails}` }
       res.status(500).json({ error: "Failed to remove moderator" });
     }
   });
-  app2.post("/api/activities/:activityId/init-chat", async (req, res) => {
+  app2.post("/api/activities/:activityId/init-chat", requireUserSession((req) => req.body?.hostId), async (req, res) => {
     const { activityId } = req.params;
     const { hostId } = req.body;
+    if (!hostId) {
+      return res.status(400).json({ error: "hostId is required" });
+    }
     try {
       const sb = getSupabase();
+      const { data: activityRow, error: activityErr } = await sb.from("activities").select("host_id").eq("id", activityId).single();
+      if (activityErr || !activityRow) {
+        return res.status(404).json({ error: "Activity not found" });
+      }
+      if (String(activityRow.host_id) !== String(hostId)) {
+        return res.status(403).json({ error: "Only host can initialize chat" });
+      }
       const { data: existing } = await sb.from("activity_moderators").select("id").eq("activity_id", activityId).eq("user_id", hostId);
       if (!existing || existing.length === 0) {
         const modId = `mod_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
@@ -1360,7 +1685,7 @@ ${vanDetails}` }
       res.status(500).json({ error: "Failed to update SOS incident" });
     }
   });
-  app2.post("/api/feedback", async (req, res) => {
+  app2.post("/api/feedback", feedbackRateLimit, async (req, res) => {
     const supportEmail = "nomadconnect611@gmail.com";
     try {
       const { userId, userName, userEmail, message, app: appName } = req.body || {};
@@ -1456,21 +1781,31 @@ ${vanDetails}` }
       res.status(500).json({ error: "Failed to submit feedback" });
     }
   });
-  app2.post("/api/password-reset/send-otp", async (req, res) => {
+  app2.post("/api/password-reset/send-otp", passwordResetRateLimit, async (req, res) => {
     try {
       const { email } = req.body;
       if (!email) {
         return res.status(400).json({ error: "Email is required" });
       }
-      const normalizedEmail = email.toLowerCase().trim();
+      const normalizedEmail = normalizeEmail(email);
+      if (!isValidEmail(normalizedEmail)) {
+        return res.status(400).json({ error: "Please enter a valid email" });
+      }
+      let hasAccount = true;
+      if (pgPool) {
+        const existsRes = await pgPool.query("SELECT 1 FROM app_users WHERE email = $1 LIMIT 1", [normalizedEmail]);
+        hasAccount = Number(existsRes.rowCount || 0) > 0;
+      }
       const code = Math.floor(1e5 + Math.random() * 9e5).toString();
-      otpStore.set(normalizedEmail, {
-        email: normalizedEmail,
-        code,
-        expiresAt: new Date(Date.now() + 10 * 60 * 1e3),
-        used: false
-      });
-      let emailSent = false;
+      if (hasAccount) {
+        otpStore.set(normalizedEmail, {
+          email: normalizedEmail,
+          code,
+          expiresAt: new Date(Date.now() + 10 * 60 * 1e3),
+          used: false
+        });
+      }
+      let emailSent = !hasAccount;
       const emailjsServiceId = process.env.EMAILJS_SERVICE_ID;
       const emailjsTemplateId = process.env.EMAILJS_TEMPLATE_ID;
       const emailjsPublicKey = process.env.EMAILJS_PUBLIC_KEY;
@@ -1523,18 +1858,18 @@ ${vanDetails}` }
         }
       }
       if (!emailSent) {
-        return res.status(500).json({ error: "Failed to send email. Please check EmailJS credentials." });
+        return res.status(500).json({ error: "Failed to process request" });
       }
       res.json({
         success: true,
-        message: "Code sent to your email"
+        message: "If an account exists for this email, a code has been sent."
       });
     } catch (error) {
       console.error("Send OTP error:", error);
       res.status(500).json({ error: "Failed to send verification code" });
     }
   });
-  app2.post("/api/password-reset/verify-otp", async (req, res) => {
+  app2.post("/api/password-reset/verify-otp", passwordResetRateLimit, async (req, res) => {
     try {
       const { email, code } = req.body;
       if (!email || !code) {
@@ -1543,17 +1878,17 @@ ${vanDetails}` }
       const normalizedEmail = email.toLowerCase().trim();
       const storedOtp = otpStore.get(normalizedEmail);
       if (!storedOtp) {
-        return res.status(400).json({ error: "No code found. Please request a new one." });
+        return res.status(400).json({ error: "Invalid or expired code" });
       }
       if (storedOtp.expiresAt < /* @__PURE__ */ new Date()) {
         otpStore.delete(normalizedEmail);
-        return res.status(400).json({ error: "Code expired. Please request a new one." });
+        return res.status(400).json({ error: "Invalid or expired code" });
       }
       if (storedOtp.used) {
-        return res.status(400).json({ error: "Code already used. Please request a new one." });
+        return res.status(400).json({ error: "Invalid or expired code" });
       }
       if (storedOtp.code !== code.trim()) {
-        return res.status(400).json({ error: "Invalid code. Please check and try again." });
+        return res.status(400).json({ error: "Invalid or expired code" });
       }
       otpStore.set(normalizedEmail, {
         ...storedOtp,
@@ -1567,16 +1902,16 @@ ${vanDetails}` }
       res.status(500).json({ error: "Verification failed" });
     }
   });
-  app2.post("/api/password-reset/update-password", async (req, res) => {
+  app2.post("/api/password-reset/update-password", passwordResetRateLimit, async (req, res) => {
     try {
       const { email, newPassword } = req.body;
       if (!email || !newPassword) {
         return res.status(400).json({ error: "Email and new password are required" });
       }
-      if (newPassword.length < 6) {
-        return res.status(400).json({ error: "Password must be at least 6 characters" });
+      if (!isStrongPassword(newPassword)) {
+        return res.status(400).json({ error: "Password must be at least 8 chars and include uppercase, lowercase, number, and symbol" });
       }
-      const normalizedEmail = email.toLowerCase().trim();
+      const normalizedEmail = normalizeEmail(email);
       const verifiedEntry = otpStore.get(normalizedEmail);
       if (!verifiedEntry || verifiedEntry.used) {
         return res.status(400).json({ error: "Please verify your code first" });
@@ -1594,7 +1929,8 @@ ${vanDetails}` }
         [nextHash, normalizedEmail]
       );
       if (!result.rowCount) {
-        return res.status(404).json({ error: "User not found" });
+        otpStore.delete(normalizedEmail);
+        return res.json({ success: true, message: "Password updated successfully" });
       }
       verifiedEntry.used = true;
       otpStore.delete(normalizedEmail);
@@ -1612,7 +1948,7 @@ ${vanDetails}` }
     const filePath = path.join(__dirname, "templates", "reset-password.html");
     res.sendFile(filePath);
   });
-  app2.post("/api/user-profiles/upsert", async (req, res) => {
+  app2.post("/api/user-profiles/upsert", requireUserSession((req) => String(req.body?.id || "")), async (req, res) => {
     try {
       const { id, name, age, bio, interests, photos, location, intentMode, activePlan } = req.body;
       if (!id) return res.status(400).json({ error: "User ID is required" });
@@ -1752,7 +2088,7 @@ ${vanDetails}` }
       res.status(500).json({ error: "Failed to get profile" });
     }
   });
-  app2.post("/api/explorex/intent/:userId", async (req, res) => {
+  app2.post("/api/explorex/intent/:userId", requireUserSession((req) => req.params.userId), async (req, res) => {
     try {
       if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
       const userId = req.params.userId;
@@ -1769,7 +2105,7 @@ ${vanDetails}` }
       return res.status(500).json({ error: "Failed to set intent" });
     }
   });
-  app2.get("/api/explorex/intent/:userId", async (req, res) => {
+  app2.get("/api/explorex/intent/:userId", requireUserSession((req) => req.params.userId), async (req, res) => {
     try {
       if (!pgPool) return res.json({ mode: "explore_city" });
       const userId = req.params.userId;
@@ -1784,7 +2120,7 @@ ${vanDetails}` }
       return res.json({ mode: "explore_city" });
     }
   });
-  app2.get("/api/explorex/plans/:userId", async (req, res) => {
+  app2.get("/api/explorex/plans/:userId", requireUserSession((req) => req.params.userId), async (req, res) => {
     try {
       if (!pgPool) return res.json([]);
       const userId = req.params.userId;
@@ -1811,7 +2147,7 @@ ${vanDetails}` }
       return res.json([]);
     }
   });
-  app2.post("/api/explorex/plans/:userId", async (req, res) => {
+  app2.post("/api/explorex/plans/:userId", requireUserSession((req) => req.params.userId), async (req, res) => {
     try {
       if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
       const userId = req.params.userId;
@@ -1844,7 +2180,7 @@ ${vanDetails}` }
       return res.status(500).json({ error: "Failed to create plan" });
     }
   });
-  app2.post("/api/explorex/plans/:userId/:planId/activate", async (req, res) => {
+  app2.post("/api/explorex/plans/:userId/:planId/activate", requireUserSession((req) => req.params.userId), async (req, res) => {
     try {
       if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
       const { userId, planId } = req.params;
@@ -1856,7 +2192,7 @@ ${vanDetails}` }
       return res.status(500).json({ error: "Failed to activate plan" });
     }
   });
-  app2.delete("/api/explorex/plans/:userId/:planId", async (req, res) => {
+  app2.delete("/api/explorex/plans/:userId/:planId", requireUserSession((req) => req.params.userId), async (req, res) => {
     try {
       if (!pgPool) return res.status(500).json({ error: "Database is not configured" });
       const { userId, planId } = req.params;
@@ -1953,7 +2289,7 @@ ${vanDetails}` }
       return res.status(500).json({ error: "Failed to log journey" });
     }
   });
-  app2.get("/api/explorex/journey/:userId", async (req, res) => {
+  app2.get("/api/explorex/journey/:userId", requireUserSession((req) => req.params.userId), async (req, res) => {
     try {
       if (!pgPool) return res.json([]);
       const userId = req.params.userId;
@@ -1971,7 +2307,7 @@ ${vanDetails}` }
       return res.json([]);
     }
   });
-  app2.get("/api/explorex/serendipity/:userId", async (req, res) => {
+  app2.get("/api/explorex/serendipity/:userId", requireUserSession((req) => req.params.userId), async (req, res) => {
     try {
       const userId = req.params.userId;
       if (!userId) return res.status(400).json({ error: "User ID is required" });
@@ -2318,7 +2654,7 @@ Return ONLY this JSON structure:
     expert: -1,
     lifetime: -1
   };
-  app2.post("/api/radar/update-location", async (req, res) => {
+  app2.post("/api/radar/update-location", requireUserSession((req) => req.body?.userId), async (req, res) => {
     try {
       const { userId, lat, lng } = req.body;
       if (!userId || lat === void 0 || lng === void 0) {
@@ -2347,7 +2683,7 @@ Return ONLY this JSON structure:
       res.status(500).json({ error: "Failed to update location" });
     }
   });
-  app2.post("/api/radar/scan", async (req, res) => {
+  app2.post("/api/radar/scan", requireUserSession((req) => req.body?.userId), async (req, res) => {
     try {
       const { userId, lat, lng, radiusKm, tier } = req.body;
       if (!userId || lat === void 0 || lng === void 0) {
@@ -2631,7 +2967,7 @@ Return ONLY this JSON structure:
       res.status(500).json({ error: "Failed to scan nearby users" });
     }
   });
-  app2.post("/api/radar/toggle-visibility", async (req, res) => {
+  app2.post("/api/radar/toggle-visibility", requireUserSession((req) => req.body?.userId), async (req, res) => {
     try {
       const { userId, isVisible } = req.body;
       if (!userId) return res.status(400).json({ error: "userId is required" });
@@ -2647,7 +2983,7 @@ Return ONLY this JSON structure:
       res.status(500).json({ error: "Failed to toggle visibility" });
     }
   });
-  app2.post("/api/radar/chat-request", async (req, res) => {
+  app2.post("/api/radar/chat-request", requireUserSession((req) => req.body?.senderId), async (req, res) => {
     try {
       const { senderId, receiverId, senderName, senderPhoto, receiverName, receiverPhoto, message } = req.body;
       if (!senderId || !receiverId) {
@@ -2709,7 +3045,7 @@ Return ONLY this JSON structure:
       res.status(500).json({ error: "Failed to send chat request" });
     }
   });
-  app2.get("/api/radar/chat-requests/:userId", async (req, res) => {
+  app2.get("/api/radar/chat-requests/:userId", requireUserSession((req) => req.params.userId), async (req, res) => {
     try {
       const userId = req.params.userId;
       if (pgPool) {
@@ -2739,14 +3075,27 @@ Return ONLY this JSON structure:
       res.json({ received: [], sent: [] });
     }
   });
-  app2.post("/api/radar/chat-request/:requestId/respond", async (req, res) => {
+  app2.post("/api/radar/chat-request/:requestId/respond", requireUserSession((req) => req.body?.responderId), async (req, res) => {
     try {
-      const { action } = req.body;
+      const { action, responderId } = req.body;
       if (!["accepted", "declined"].includes(action)) {
         return res.status(400).json({ error: "action must be 'accepted' or 'declined'" });
       }
+      if (!responderId) {
+        return res.status(400).json({ error: "responderId is required" });
+      }
       const requestId = req.params.requestId;
       if (pgPool) {
+        const ownershipRes = await pgPool.query(
+          `SELECT receiver_id FROM radar_chat_requests WHERE id = $1 LIMIT 1`,
+          [requestId]
+        );
+        if (!ownershipRes.rowCount) {
+          return res.status(404).json({ error: "Request not found" });
+        }
+        if (String(ownershipRes.rows[0].receiver_id) !== String(responderId)) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
         await pgPool.query(
           `UPDATE radar_chat_requests SET status = $2, updated_at = NOW() WHERE id = $1`,
           [requestId, action]
@@ -2770,6 +3119,14 @@ Return ONLY this JSON structure:
         return res.json({ success: true, status: action });
       }
       const sb = getSupabase();
+      const { data: ownershipRows, error: ownershipErr } = await sb.from("radar_chat_requests").select("receiver_id").eq("id", requestId).limit(1);
+      if (ownershipErr) throw ownershipErr;
+      if (!ownershipRows || ownershipRows.length === 0) {
+        return res.status(404).json({ error: "Request not found" });
+      }
+      if (String(ownershipRows[0].receiver_id) !== String(responderId)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
       const { error } = await sb.from("radar_chat_requests").update({ status: action, updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", requestId);
       if (error) throw error;
       if (action === "accepted") {
@@ -3053,16 +3410,14 @@ Badge assignment:
           }
           return copy;
         };
+        const DISCOVER_TARGET_COUNT2 = 20;
         const shuffledReal2 = shuffle2(realProfiles2);
         const shuffledMock2 = shuffle2(mockProfiles2);
-        filtered2 = realProfiles2.length > 0 ? [...shuffledReal2, ...shuffledMock2].slice(0, 30) : shuffledMock2.slice(0, 30);
-        if (realProfiles2.length > 0) {
-          filtered2 = [...filtered2].sort((a, b) => {
-            const aMock = String(a.id).startsWith("mock");
-            const bMock = String(b.id).startsWith("mock");
-            if (aMock === bMock) return 0;
-            return aMock ? 1 : -1;
-          });
+        if (shuffledReal2.length >= DISCOVER_TARGET_COUNT2) {
+          filtered2 = shuffledReal2.slice(0, DISCOVER_TARGET_COUNT2);
+        } else {
+          const neededMocks = Math.max(0, DISCOVER_TARGET_COUNT2 - shuffledReal2.length);
+          filtered2 = [...shuffledReal2, ...shuffledMock2.slice(0, neededMocks)];
         }
         const meta2 = await loadExploreXMetaForUsers(filtered2.map((row) => String(row.id)));
         const profiles2 = filtered2.map((row) => {
@@ -3116,16 +3471,14 @@ Badge assignment:
         }
         return copy;
       };
+      const DISCOVER_TARGET_COUNT = 20;
       const shuffledReal = shuffle(realProfiles);
       const shuffledMock = shuffle(mockProfiles);
-      filtered = realProfiles.length > 0 ? [...shuffledReal, ...shuffledMock].slice(0, 30) : shuffledMock.slice(0, 30);
-      if (realProfiles.length > 0) {
-        filtered = [...filtered].sort((a, b) => {
-          const aMock = String(a.id).startsWith("mock");
-          const bMock = String(b.id).startsWith("mock");
-          if (aMock === bMock) return 0;
-          return aMock ? 1 : -1;
-        });
+      if (shuffledReal.length >= DISCOVER_TARGET_COUNT) {
+        filtered = shuffledReal.slice(0, DISCOVER_TARGET_COUNT);
+      } else {
+        const neededMocks = Math.max(0, DISCOVER_TARGET_COUNT - shuffledReal.length);
+        filtered = [...shuffledReal, ...shuffledMock.slice(0, neededMocks)];
       }
       const meta = await loadExploreXMetaForUsers((filtered || []).map((row) => String(row.id)));
       const profiles = filtered.map((row) => {
@@ -3160,7 +3513,7 @@ Badge assignment:
       res.json([]);
     }
   });
-  app2.post("/api/swipes", async (req, res) => {
+  app2.post("/api/swipes", requireUserSession((req) => String(req.body?.swiperId || "")), async (req, res) => {
     try {
       const { swiperId, swipedId, direction } = req.body;
       if (!swiperId || !swipedId || !direction) {
@@ -3316,7 +3669,7 @@ Badge assignment:
       res.status(500).json({ error: "Failed to record swipe" });
     }
   });
-  app2.get("/api/matches/:userId", async (req, res) => {
+  app2.get("/api/matches/:userId", requireUserSession((req) => req.params.userId), async (req, res) => {
     try {
       const { userId } = req.params;
       if (!userId) return res.status(400).json({ error: "User ID is required" });
@@ -3444,7 +3797,7 @@ Badge assignment:
       res.json([]);
     }
   });
-  app2.get("/api/swipes/liked/:userId", async (req, res) => {
+  app2.get("/api/swipes/liked/:userId", requireUserSession((req) => req.params.userId), async (req, res) => {
     try {
       const { userId } = req.params;
       if (pgPool) {
@@ -3538,7 +3891,7 @@ Badge assignment:
       res.status(500).json({ error: "Failed to seed mock swipes" });
     }
   });
-  app2.post("/api/swipes/reset/:userId", async (req, res) => {
+  app2.post("/api/swipes/reset/:userId", requireUserSession((req) => req.params.userId), async (req, res) => {
     try {
       const { userId } = req.params;
       if (!userId) return res.status(400).json({ error: "User ID required" });
@@ -3858,10 +4211,21 @@ Scoring rules:
       res.status(500).json({ error: "Failed to update payment" });
     }
   });
-  app2.get("/api/messages/:matchId", async (req, res) => {
+  app2.get("/api/messages/:matchId", requireUserSession((req) => req.query.userId), async (req, res) => {
     const { matchId } = req.params;
+    const userId = Array.isArray(req.query.userId) ? String(req.query.userId[0] || "") : String(req.query.userId || "");
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
     try {
       if (pgPool) {
+        const membership = await pgPool.query(
+          `SELECT id FROM matches WHERE id = $1 AND (user_a_id = $2 OR user_b_id = $2) LIMIT 1`,
+          [matchId, userId]
+        );
+        if (!membership.rowCount) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
         const result = await pgPool.query(
           `SELECT * FROM chat_messages WHERE match_id = $1 ORDER BY created_at ASC`,
           [matchId]
@@ -3869,6 +4233,11 @@ Scoring rules:
         return res.json(result.rows || []);
       }
       const sb = getSupabase();
+      const { data: memberRows, error: memberError } = await sb.from("matches").select("id").eq("id", matchId).or(`user_a_id.eq.${userId},user_b_id.eq.${userId}`).limit(1);
+      if (memberError) throw memberError;
+      if (!memberRows || memberRows.length === 0) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
       const { data, error } = await sb.from("chat_messages").select("*").eq("match_id", matchId).order("created_at", { ascending: true });
       if (error) throw error;
       res.json(data || []);
@@ -3877,13 +4246,23 @@ Scoring rules:
       res.status(500).json({ error: "Failed to get messages" });
     }
   });
-  app2.post("/api/messages/:matchId", async (req, res) => {
+  app2.post("/api/messages/:matchId", requireUserSession((req) => req.body?.senderId), async (req, res) => {
     const { matchId } = req.params;
     const { senderId, content, type, photoUrl, fileUrl, fileName, audioUrl, audioDuration, replyTo, location } = req.body;
+    if (!senderId) {
+      return res.status(400).json({ error: "senderId is required" });
+    }
     const msgId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
     const now = (/* @__PURE__ */ new Date()).toISOString();
     try {
       if (pgPool) {
+        const membership = await pgPool.query(
+          `SELECT id FROM matches WHERE id = $1 AND (user_a_id = $2 OR user_b_id = $2) LIMIT 1`,
+          [matchId, senderId]
+        );
+        if (!membership.rowCount) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
         const result = await pgPool.query(
           `INSERT INTO chat_messages (
              id, match_id, sender_id, content, type, photo_url, file_url, file_name,
@@ -3911,6 +4290,11 @@ Scoring rules:
         return res.status(201).json(result.rows[0]);
       }
       const sb = getSupabase();
+      const { data: memberRows, error: memberError } = await sb.from("matches").select("id").eq("id", matchId).or(`user_a_id.eq.${senderId},user_b_id.eq.${senderId}`).limit(1);
+      if (memberError) throw memberError;
+      if (!memberRows || memberRows.length === 0) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
       const { data, error } = await sb.from("chat_messages").insert({
         id: msgId,
         match_id: matchId,
@@ -3935,11 +4319,21 @@ Scoring rules:
       res.status(500).json({ error: "Failed to send message" });
     }
   });
-  app2.patch("/api/messages/:messageId", async (req, res) => {
+  app2.patch("/api/messages/:messageId", requireUserSession((req) => req.body?.userId), async (req, res) => {
     const { messageId } = req.params;
-    const { content } = req.body;
+    const { content, userId } = req.body;
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
     try {
       if (pgPool) {
+        const ownerRes = await pgPool.query(`SELECT sender_id FROM chat_messages WHERE id = $1 LIMIT 1`, [messageId]);
+        if (!ownerRes.rowCount) {
+          return res.status(404).json({ error: "Message not found" });
+        }
+        if (String(ownerRes.rows[0].sender_id) !== String(userId)) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
         const result = await pgPool.query(
           `UPDATE chat_messages SET content = $1, edited_at = NOW() WHERE id = $2 RETURNING *`,
           [content, messageId]
@@ -3950,6 +4344,16 @@ Scoring rules:
         return res.json(result.rows[0]);
       }
       const sb = getSupabase();
+      const { data: ownerRow, error: ownerErr } = await sb.from("chat_messages").select("sender_id").eq("id", messageId).single();
+      if (ownerErr) {
+        if (ownerErr.code === "PGRST116") {
+          return res.status(404).json({ error: "Message not found" });
+        }
+        throw ownerErr;
+      }
+      if (String(ownerRow?.sender_id || "") !== String(userId)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
       const { data, error } = await sb.from("chat_messages").update({ content, edited_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", messageId).select().single();
       if (error) {
         if (error.code === "PGRST116") {
@@ -3963,10 +4367,21 @@ Scoring rules:
       res.status(500).json({ error: "Failed to edit message" });
     }
   });
-  app2.delete("/api/messages/:messageId", async (req, res) => {
+  app2.delete("/api/messages/:messageId", requireUserSession((req) => req.query.userId), async (req, res) => {
     const { messageId } = req.params;
+    const userId = Array.isArray(req.query.userId) ? String(req.query.userId[0] || "") : String(req.query.userId || "");
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
     try {
       if (pgPool) {
+        const ownerRes = await pgPool.query(`SELECT sender_id FROM chat_messages WHERE id = $1 LIMIT 1`, [messageId]);
+        if (!ownerRes.rowCount) {
+          return res.status(404).json({ error: "Message not found" });
+        }
+        if (String(ownerRes.rows[0].sender_id) !== String(userId)) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
         const result = await pgPool.query(`DELETE FROM chat_messages WHERE id = $1 RETURNING id`, [messageId]);
         if (!result.rowCount) {
           return res.status(404).json({ error: "Message not found" });
@@ -3974,6 +4389,14 @@ Scoring rules:
         return res.json({ success: true });
       }
       const sb = getSupabase();
+      const { data: ownerRows, error: ownerError } = await sb.from("chat_messages").select("sender_id").eq("id", messageId).limit(1);
+      if (ownerError) throw ownerError;
+      if (!ownerRows || ownerRows.length === 0) {
+        return res.status(404).json({ error: "Message not found" });
+      }
+      if (String(ownerRows[0].sender_id) !== String(userId)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
       const { data, error } = await sb.from("chat_messages").delete().eq("id", messageId).select("id");
       if (error) throw error;
       if (!data || data.length === 0) {
@@ -3985,7 +4408,7 @@ Scoring rules:
       res.status(500).json({ error: "Failed to delete message" });
     }
   });
-  app2.patch("/api/messages/:messageId/reactions", async (req, res) => {
+  app2.patch("/api/messages/:messageId/reactions", requireUserSession((req) => req.body?.userId), async (req, res) => {
     const { messageId } = req.params;
     const { userId, emoji } = req.body;
     if (!userId || !emoji) {
@@ -3993,9 +4416,17 @@ Scoring rules:
     }
     try {
       if (pgPool) {
-        const msgRes = await pgPool.query(`SELECT reactions FROM chat_messages WHERE id = $1 LIMIT 1`, [messageId]);
+        const msgRes = await pgPool.query(`SELECT reactions, match_id FROM chat_messages WHERE id = $1 LIMIT 1`, [messageId]);
         if (!msgRes.rowCount) {
           return res.status(404).json({ error: "Message not found" });
+        }
+        const matchId = String(msgRes.rows[0].match_id || "");
+        const membership = await pgPool.query(
+          `SELECT id FROM matches WHERE id = $1 AND (user_a_id = $2 OR user_b_id = $2) LIMIT 1`,
+          [matchId, userId]
+        );
+        if (!membership.rowCount) {
+          return res.status(403).json({ error: "Forbidden" });
         }
         const reactions2 = msgRes.rows[0].reactions || {};
         const current2 = new Set(reactions2[emoji] || []);
@@ -4013,7 +4444,7 @@ Scoring rules:
         return res.json({ id: messageId, reactions: reactions2 });
       }
       const sb = getSupabase();
-      const { data: msgData, error: getError } = await sb.from("chat_messages").select("reactions").eq("id", messageId).single();
+      const { data: msgData, error: getError } = await sb.from("chat_messages").select("reactions, match_id").eq("id", messageId).single();
       if (getError) {
         if (getError.code === "PGRST116") {
           return res.status(404).json({ error: "Message not found" });
@@ -4126,6 +4557,28 @@ import * as fs2 from "fs";
 import * as path2 from "path";
 var app = express();
 var log = console.log;
+function setupSecurityHeaders(app2) {
+  app2.disable("x-powered-by");
+  app2.set("trust proxy", 1);
+  app2.use((req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(self)");
+    if (process.env.NODE_ENV === "production") {
+      res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    }
+    next();
+  });
+  app2.use(
+    "/api",
+    createRateLimiter({
+      windowMs: 6e4,
+      max: 240,
+      message: "Too many API requests. Slow down and try again."
+    })
+  );
+}
 function setupCors(app2) {
   app2.use((req, res, next) => {
     const origins = /* @__PURE__ */ new Set();
@@ -4157,12 +4610,13 @@ function setupCors(app2) {
 function setupBodyParsing(app2) {
   app2.use(
     express.json({
+      limit: "1mb",
       verify: (req, _res, buf) => {
         req.rawBody = buf;
       }
     })
   );
-  app2.use(express.urlencoded({ extended: false }));
+  app2.use(express.urlencoded({ extended: false, limit: "1mb" }));
 }
 function setupRequestLogging(app2) {
   app2.use((req, res, next) => {
@@ -4182,7 +4636,7 @@ function setupRequestLogging(app2) {
         logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
       }
       if (logLine.length > 80) {
-        logLine = logLine.slice(0, 79) + "\u2026";
+        logLine = logLine.slice(0, 79) + "...";
       }
       log(logLine);
     });
@@ -4282,6 +4736,7 @@ function setupErrorHandler(app2) {
   });
 }
 (async () => {
+  setupSecurityHeaders(app);
   setupCors(app);
   setupBodyParsing(app);
   setupRequestLogging(app);

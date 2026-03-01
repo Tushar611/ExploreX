@@ -36,10 +36,6 @@ export type RootStackParamList = {
   Main: undefined;
   Chat: { matchId: string; matchName: string; matchPhoto?: string };
   ActivityChat: { activityId: string; activityTitle: string };
-  AIAdvisor: undefined;
-  AIChat: undefined;
-  AIPhotoAnalysis: undefined;
-  AICostEstimator: undefined;
   ExpertMarketplace: undefined;
   ApplyAsExpert: undefined;
   ExpertStatus: undefined;
