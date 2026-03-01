@@ -1,7 +1,9 @@
 import { Platform } from "react-native";
-import * as FileSystem from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
+import { File, Paths } from "expo-file-system";
 import * as MediaLibrary from "expo-media-library";
 import * as Sharing from "expo-sharing";
+import { getApiUrl } from "@/lib/query-client";
 
 const getFilenameFromUrl = (url: string, fallback = "download") => {
   try {
@@ -27,63 +29,168 @@ const createFileFromDataUri = async (dataUri: string, filename: string) => {
   return fileUri;
 };
 
+const ensureExtension = (name: string, fallbackExt: string) => {
+  if (/\.[a-z0-9]+$/i.test(name)) return name;
+  return `${name}.${fallbackExt}`;
+};
+
+const mimeFromFilename = (name: string) => {
+  const ext = (name.split(".").pop() || "").toLowerCase();
+  switch (ext) {
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "png":
+      return "image/png";
+    case "webp":
+      return "image/webp";
+    case "gif":
+      return "image/gif";
+    case "pdf":
+      return "application/pdf";
+    case "mp4":
+      return "video/mp4";
+    case "mp3":
+      return "audio/mpeg";
+    case "m4a":
+      return "audio/mp4";
+    case "wav":
+      return "audio/wav";
+    case "txt":
+      return "text/plain";
+    case "json":
+      return "application/json";
+    default:
+      return "application/octet-stream";
+  }
+};
+
+
+const buildDownloadCandidates = (uri: string) => {
+  const candidates: string[] = [];
+  if (!uri) return candidates;
+
+  candidates.push(uri);
+
+  let apiOrigin = "";
+  try {
+    apiOrigin = new URL(getApiUrl()).origin;
+  } catch {
+    apiOrigin = "";
+  }
+
+  if (uri.startsWith("/")) {
+    try {
+      candidates.push(new URL(uri, getApiUrl()).toString());
+    } catch {}
+  }
+
+  if (/^https?:\/\//i.test(uri) && apiOrigin) {
+    try {
+      const parsed = new URL(uri);
+      const samePathOnApi = `${apiOrigin}${parsed.pathname}${parsed.search}`;
+      candidates.push(samePathOnApi);
+
+      const uploadsIndex = parsed.pathname.indexOf("/uploads/");
+      if (uploadsIndex >= 0) {
+        const uploadsPath = parsed.pathname.slice(uploadsIndex);
+        candidates.push(`${apiOrigin}${uploadsPath}`);
+      }
+    } catch {}
+  }
+
+  return Array.from(new Set(candidates));
+};
+
+const resolveDownloadUri = (uri: string) => buildDownloadCandidates(uri)[0] || uri;
+
+const ensureLocalUri = async (uri: string, filename: string) => {
+  if (uri.startsWith("file://")) return uri;
+  if (uri.startsWith("data:")) return createFileFromDataUri(uri, filename);
+
+  const candidates = buildDownloadCandidates(uri).filter((candidate) =>
+    candidate.startsWith("http://") || candidate.startsWith("https://")
+  );
+
+  let lastError: unknown = null;
+  for (const remoteUri of candidates) {
+    try {
+      const outFile = new File(Paths.cache, `${Date.now()}_${filename}`);
+      const downloaded = await File.downloadFileAsync(remoteUri, outFile);
+      return downloaded.uri;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  return resolveDownloadUri(uri);
+};
+
+const saveWithStorageAccessFramework = async (localUri: string, name: string) => {
+  if (!(Platform.OS === "android" && FileSystem.StorageAccessFramework)) {
+    throw new Error("Storage Access Framework unavailable");
+  }
+
+  const permissions =
+    await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+  if (!permissions.granted) {
+    throw new Error("Storage permission denied");
+  }
+
+  const base64 = await FileSystem.readAsStringAsync(localUri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  const mimeType = mimeFromFilename(name);
+  const destUri = await FileSystem.StorageAccessFramework.createFileAsync(
+    permissions.directoryUri,
+    name,
+    mimeType
+  );
+  await FileSystem.writeAsStringAsync(destUri, base64, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+};
+
 export const saveImageToGallery = async (uri: string, filename?: string) => {
-  const permission = await MediaLibrary.requestPermissionsAsync();
-  if (permission.status !== "granted") {
-    throw new Error("Media library permission denied");
+  const name = ensureExtension(
+    filename || getFilenameFromUrl(uri, "image"),
+    "jpg"
+  );
+  const localUri = await ensureLocalUri(uri, name);
+
+  try {
+    const permission = await MediaLibrary.requestPermissionsAsync();
+    if (permission.status !== "granted") {
+      throw new Error("Media library permission denied");
+    }
+    await MediaLibrary.createAssetAsync(localUri);
+    return;
+  } catch (error) {
+    if (Platform.OS === "android") {
+      await saveWithStorageAccessFramework(localUri, name);
+      return;
+    }
+    throw error;
   }
-
-  let localUri = uri;
-  const name = filename || getFilenameFromUrl(uri, "image.jpg");
-
-  if (uri.startsWith("data:")) {
-    localUri = await createFileFromDataUri(uri, name);
-  } else if (uri.startsWith("http")) {
-    const download = await FileSystem.downloadAsync(
-      uri,
-      `${FileSystem.cacheDirectory}${name}`
-    );
-    localUri = download.uri;
-  }
-
-  await MediaLibrary.saveToLibraryAsync(localUri);
 };
 
 export const saveFileToDevice = async (uri: string, filename?: string) => {
   const name = filename || getFilenameFromUrl(uri, "file");
-  let localUri = uri;
-
-  if (uri.startsWith("http")) {
-    const download = await FileSystem.downloadAsync(
-      uri,
-      `${FileSystem.cacheDirectory}${name}`
-    );
-    localUri = download.uri;
-  }
+  const localUri = await ensureLocalUri(uri, name);
 
   if (Platform.OS === "android" && FileSystem.StorageAccessFramework) {
-    const permissions =
-      await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
-    if (!permissions.granted) {
-      throw new Error("Storage permission denied");
-    }
-
-    const base64 = await FileSystem.readAsStringAsync(localUri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
-    const mimeType = "application/octet-stream";
-    const destUri = await FileSystem.StorageAccessFramework.createFileAsync(
-      permissions.directoryUri,
-      name,
-      mimeType
-    );
-    await FileSystem.writeAsStringAsync(destUri, base64, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
+    await saveWithStorageAccessFramework(localUri, name);
     return;
   }
 
   if (await Sharing.isAvailableAsync()) {
     await Sharing.shareAsync(localUri);
+    return;
   }
+
+  throw new Error("No save/share method available on this device");
 };

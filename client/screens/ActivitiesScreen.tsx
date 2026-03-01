@@ -405,17 +405,6 @@ export default function ActivitiesScreen() {
             Discover events near you
           </ThemedText>
         </View>
-        <Pressable
-          style={styles.radarBtn}
-          onPress={() => navigation.navigate("SocialRadar" as any)}
-        >
-          <LinearGradient
-            colors={["#16A34A", "#22C55E"]}
-            style={styles.radarBtnGradient}
-          >
-            <Ionicons name="radio-outline" size={20} color="#FFF" />
-          </LinearGradient>
-        </Pressable>
       </View>
     </View>
   );
@@ -1208,16 +1197,6 @@ const styles = StyleSheet.create({
     flexDirection: "row" as const,
     alignItems: "center" as const,
     justifyContent: "space-between" as const,
-  },
-  radarBtn: {
-    marginLeft: 12,
-  },
-  radarBtnGradient: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    alignItems: "center" as const,
-    justifyContent: "center" as const,
   },
   headerTitle: {
     color: "#FFFFFF",

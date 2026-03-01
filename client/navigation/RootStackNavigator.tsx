@@ -7,7 +7,6 @@ import ChatScreen from "@/screens/ChatScreen";
 import ActivityChatScreen from "@/screens/ActivityChatScreen";
 import SubscriptionScreen from "@/screens/SubscriptionScreen";
 import CustomerCenterScreen from "@/screens/CustomerCenterScreen";
-import SocialRadarScreen from "@/screens/SocialRadarScreen";
 import SplashScreen from "@/screens/SplashScreen";
 import TravelVerificationScreen from "@/screens/TravelVerificationScreen";
 import { SOSButton } from "@/components/SOSButton";
@@ -41,7 +40,6 @@ export type RootStackParamList = {
   ExpertStatus: undefined;
   Subscription: undefined;
   CustomerCenter: undefined;
-  SocialRadar: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -169,13 +167,6 @@ export default function RootStackNavigator() {
             <Stack.Screen
               name="CustomerCenter"
               component={CustomerCenterScreen}
-              options={{
-                headerShown: false,
-              }}
-            />
-            <Stack.Screen
-              name="SocialRadar"
-              component={SocialRadarScreen}
               options={{
                 headerShown: false,
               }}

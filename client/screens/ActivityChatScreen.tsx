@@ -453,7 +453,8 @@ export default function ActivityChatScreen() {
       await saveImageToGallery(uri);
       showAlert({ type: "success", title: "Saved", message: "Image saved to your gallery." });
     } catch (error) {
-      showAlert({ type: "error", title: "Download Failed", message: "Could not save the image." });
+      const detail = error instanceof Error ? error.message : "Could not save the image.";
+      showAlert({ type: "error", title: "Download Failed", message: detail });
     }
   };
 
@@ -462,7 +463,8 @@ export default function ActivityChatScreen() {
       await saveFileToDevice(uri, name);
       showAlert({ type: "success", title: "Saved", message: "File saved to your device." });
     } catch (error) {
-      showAlert({ type: "error", title: "Download Failed", message: "Could not save the file." });
+      const detail = error instanceof Error ? error.message : "Could not save the file.";
+      showAlert({ type: "error", title: "Download Failed", message: detail });
     }
   };
 
@@ -668,27 +670,27 @@ export default function ActivityChatScreen() {
       const onSwipe = () => setReplyTo(item);
 
       return (
-        <Swipeable
-          renderLeftActions={isOwnMessage ? undefined : () => <View style={styles.swipeAction} />}
-          renderRightActions={isOwnMessage ? () => <View style={styles.swipeAction} /> : undefined}
-          onSwipeableOpen={(direction, swipeable) => {
-            if (direction === 'left' && !isOwnMessage) onSwipe();
-            if (direction === 'right' && isOwnMessage) onSwipe();
-            swipeable.close();
-          }}
+        <View
+          style={[
+            styles.messageContainer,
+            isOwnMessage ? styles.ownMessage : styles.otherMessage,
+          ]}
         >
-          <Pressable onLongPress={() => handleLongPress(item)} delayLongPress={300}>
-            <View
-            style={[
-              styles.messageContainer,
-              isOwnMessage ? styles.ownMessage : styles.otherMessage,
-            ]}
+          {showTime ? (
+            <ThemedText type="small" style={[styles.timestamp, { color: theme.textSecondary }]}>
+              {formatTime(item.createdAt)}
+            </ThemedText>
+          ) : null}
+          <Swipeable
+            renderLeftActions={isOwnMessage ? undefined : () => <View style={styles.swipeAction} />}
+            renderRightActions={isOwnMessage ? () => <View style={styles.swipeAction} /> : undefined}
+            onSwipeableOpen={(direction, swipeable) => {
+              if (direction === 'left' && !isOwnMessage) onSwipe();
+              if (direction === 'right' && isOwnMessage) onSwipe();
+              swipeable.close();
+            }}
           >
-            {showTime ? (
-              <ThemedText type="small" style={[styles.timestamp, { color: theme.textSecondary }]}>
-                {formatTime(item.createdAt)}
-              </ThemedText>
-            ) : null}
+            <Pressable onLongPress={() => handleLongPress(item)} delayLongPress={300}>
 
             {!isOwnMessage && (
               <View style={styles.senderInfo}>
@@ -844,9 +846,9 @@ export default function ActivityChatScreen() {
                 </View>
               )}
             </View>
-          </View>
-          </Pressable>
-        </Swipeable>
+            </Pressable>
+          </Swipeable>
+        </View>
       );
     },
     [user?.id, theme, moderators, reversedMessages, handleLongPress, handleReaction, playAudio, playingAudioId]
@@ -892,7 +894,7 @@ export default function ActivityChatScreen() {
         removeClippedSubviews={Platform.OS !== "ios"}
         contentContainerStyle={[
           styles.listContent,
-          { paddingTop: headerHeight + Spacing.lg },
+          { paddingBottom: headerHeight + Spacing.lg, paddingTop: Spacing.md },
           activeMessages.length === 0 && styles.emptyListContent,
         ]}
         ListEmptyComponent={EmptyChat}
@@ -1310,7 +1312,7 @@ const styles = StyleSheet.create({
   },
   messageContainer: {
     marginBottom: Spacing.sm,
-    maxWidth: "80%",
+    width: "100%",
   },
   ownMessage: {
     alignSelf: "flex-end",
@@ -1386,6 +1388,7 @@ const styles = StyleSheet.create({
   messageText: {
     fontSize: 16,
     lineHeight: 22,
+    flexShrink: 1,
   },
   messageFooter: {
     flexDirection: "row",

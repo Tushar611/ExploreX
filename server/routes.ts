@@ -846,8 +846,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "File is required" });
       }
 
-      const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "https");
-      const host = String(req.headers["x-forwarded-host"] || req.headers.host || "");
+      const rawProto = String(req.headers["x-forwarded-proto"] || req.protocol || "https");
+      const rawHost = String(req.headers["x-forwarded-host"] || req.headers.host || "");
+      const proto = rawProto.split(",")[0].trim() || "https";
+      const host = rawHost.split(",")[0].trim();
       const isAbsolute = host.length > 0;
       const relativeUrl = `/uploads/${req.file.filename}`;
       const url = isAbsolute ? `${proto}://${host}${relativeUrl}` : relativeUrl;
@@ -4297,28 +4299,30 @@ Badge assignment:
           pgPool.query(`SELECT * FROM user_profiles WHERE id <> $1 ORDER BY id`, [userId]),
         ]);
 
-        let matchRows: any[] = [];
-        try {
-          const matchRes = await pgPool.query(
-            `SELECT user_a_id, user_b_id FROM matches WHERE user_a_id = $1 OR user_b_id = $1`,
-            [userId],
-          );
-          matchRows = matchRes.rows || [];
-        } catch {
-          // Older DB snapshots used user_a/user_b. Keep discover working.
-          const matchResLegacy = await pgPool.query(
-            `SELECT user_a AS user_a_id, user_b AS user_b_id FROM matches WHERE user_a = $1 OR user_b = $1`,
-            [userId],
-          );
-          matchRows = matchResLegacy.rows || [];
-        }
+        // Keep this query compatible with both schemas:
+        // - new columns: user_a_id/user_b_id
+        // - legacy columns: user_a/user_b
+        // Some deployments have both columns but legacy rows with null new columns.
+        const matchRes = await pgPool.query(
+          `
+            SELECT
+              COALESCE(user_a_id, user_a) AS user_a_id,
+              COALESCE(user_b_id, user_b) AS user_b_id
+            FROM matches
+            WHERE COALESCE(user_a_id, user_a) = $1
+               OR COALESCE(user_b_id, user_b) = $1
+          `,
+          [userId],
+        );
+        const matchRows: any[] = matchRes.rows || [];
 
         const swipedIds = swipedRes.rows.map((row: any) => String(row.swiped_id));
-        const matchedIds = matchRows.map((row: any) =>
-          String(row.user_a_id) === userId ? String(row.user_b_id) : String(row.user_a_id),
-        );
+        const matchedIds = matchRows
+          .map((row: any) =>
+            String(row.user_a_id) === userId ? String(row.user_b_id) : String(row.user_a_id),
+          )
+          .filter((id: string) => id && id !== "null" && id !== "undefined");
 
-        const baseExcludedIds = new Set([userId, ...swipedIds]);
         const strictExcludedIds = new Set([userId, ...swipedIds, ...matchedIds]);
 
         let filtered = allProfilesRes.rows.filter((row: any) => {
@@ -4326,18 +4330,6 @@ Badge assignment:
           return !strictExcludedIds.has(id) && !id.startsWith('mock');
         });
         let realProfiles = filtered;
-
-        // Small user pools can get stuck with zero profiles if all are already matched.
-        // In that case, allow matched users to reappear (but still exclude self and left/right swipes).
-        if (realProfiles.length < 5) {
-          const relaxed = allProfilesRes.rows.filter((row: any) => {
-            const id = String(row.id);
-            return !baseExcludedIds.has(id) && !id.startsWith('mock');
-          });
-          const byId = new Map<string, any>(realProfiles.map((row: any) => [String(row.id), row]));
-          for (const row of relaxed) byId.set(String(row.id), row);
-          realProfiles = Array.from(byId.values());
-        }
 
         // If user_profiles has very few real rows, also include app_users that don't have profiles yet.
         if (realProfiles.length < 15) {
@@ -4467,7 +4459,6 @@ Badge assignment:
         ...((matchesB || []).map(m => m.user_a_id)),
       ];
 
-      const baseExcludedIds = new Set([userId, ...swipedIds]);
       const strictExcludedIds = new Set([userId, ...swipedIds, ...matchedIds]);
 
       // Get profiles
@@ -4483,12 +4474,6 @@ Badge assignment:
       let filtered = (allProfiles || []).filter(p => !strictExcludedIds.has(p.id) && !String(p.id).startsWith('mock'));
 
       let realProfiles = filtered;
-      if (realProfiles.length < 5) {
-        const relaxed = (allProfiles || []).filter((p: any) => !baseExcludedIds.has(p.id) && !String(p.id).startsWith('mock'));
-        const byId = new Map((realProfiles || []).map((row: any) => [String(row.id), row]));
-        for (const row of relaxed) byId.set(String(row.id), row);
-        realProfiles = Array.from(byId.values());
-      }
 
       const shuffle = (arr: any[]) => {
         const copy = [...arr];
@@ -4929,6 +4914,71 @@ Badge assignment:
     }
   });
 
+  app.delete("/api/matches/:matchId", requireUserSession((req) => String(req.query?.userId || "")), async (req: Request, res: Response) => {
+    try {
+      const { matchId } = req.params;
+      const userId = String(req.query.userId || "").trim();
+      if (!matchId || !userId) {
+        return res.status(400).json({ error: "matchId and userId are required" });
+      }
+
+      if (pgPool) {
+        const matchRes = await pgPool.query(
+          `SELECT user_a_id, user_b_id FROM matches WHERE id = $1 LIMIT 1`,
+          [matchId]
+        );
+        if (!matchRes.rowCount) {
+          return res.status(404).json({ error: "Match not found" });
+        }
+
+        const row = matchRes.rows[0] as any;
+        const userA = String(row.user_a_id || "");
+        const userB = String(row.user_b_id || "");
+        if (userId !== userA && userId !== userB) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+
+        const otherUserId = userId === userA ? userB : userA;
+
+        await pgPool.query(`DELETE FROM chat_messages WHERE match_id = $1`, [matchId]);
+        await pgPool.query(`DELETE FROM matches WHERE id = $1`, [matchId]);
+        await pgPool.query(
+          `DELETE FROM swipes WHERE swiper_id = $1 AND swiped_id = $2`,
+          [userId, otherUserId]
+        );
+
+        return res.json({ success: true });
+      }
+
+      const sb = getSupabase();
+      const { data: matchRow, error: matchErr } = await sb
+        .from('matches')
+        .select('id, user_a_id, user_b_id')
+        .eq('id', matchId)
+        .limit(1)
+        .maybeSingle();
+      if (matchErr) throw matchErr;
+      if (!matchRow) return res.status(404).json({ error: "Match not found" });
+
+      const userA = String((matchRow as any).user_a_id || "");
+      const userB = String((matchRow as any).user_b_id || "");
+      if (userId !== userA && userId !== userB) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
+      const otherUserId = userId === userA ? userB : userA;
+
+      await sb.from('chat_messages').delete().eq('match_id', matchId);
+      await sb.from('matches').delete().eq('id', matchId);
+      await sb.from('swipes').delete().eq('swiper_id', userId).eq('swiped_id', otherUserId);
+
+      return res.json({ success: true });
+    } catch (error) {
+      console.error("Delete match error:", error);
+      return res.status(500).json({ error: "Failed to delete match" });
+    }
+  });
+
   app.get("/api/swipes/liked/:userId", requireUserSession((req) => req.params.userId), async (req: Request, res: Response) => {
     try {
       const { userId } = req.params;
@@ -4941,13 +4991,15 @@ Badge assignment:
         const swipedIds = swipesRes.rows.map((s: any) => String(s.swiped_id));
         if (swipedIds.length === 0) return res.json([]);
 
-        const matchRes = await pgPool.query(`SELECT user_a_id, user_b_id FROM matches WHERE user_a_id = $1 OR user_b_id = $1`, [userId]);
-        const matchedIds = new Set(matchRes.rows.map((m: any) => String(m.user_a_id) === userId ? String(m.user_b_id) : String(m.user_a_id)));
-        const filteredIds = swipedIds.filter((id: string) => !matchedIds.has(id) && !String(id).startsWith('mock'));
+        const filteredIds = swipedIds.filter((id: string) => !String(id).startsWith('mock'));
         if (filteredIds.length === 0) return res.json([]);
 
         const profilesRes = await pgPool.query(`SELECT * FROM user_profiles WHERE id = ANY($1::text[])`, [filteredIds]);
-        const likedProfiles = profilesRes.rows.map((row: any) => ({
+        const profileMap = Object.fromEntries((profilesRes.rows || []).map((row: any) => [String(row.id), row]));
+        const likedProfiles = filteredIds
+          .map((id: string) => profileMap[id])
+          .filter(Boolean)
+          .map((row: any) => ({
           id: row.id,
           email: row.email || "",
           name: row.name || "Nomad",
@@ -4980,22 +5032,7 @@ Badge assignment:
 
       const swipedIds = swipes.map(s => s.swiped_id).filter((id: string) => !String(id).startsWith('mock'));
 
-      // Get matched IDs to exclude
-      const { data: matchesA } = await sb
-        .from('matches')
-        .select('user_b_id')
-        .eq('user_a_id', userId);
-      const { data: matchesB } = await sb
-        .from('matches')
-        .select('user_a_id')
-        .eq('user_b_id', userId);
-
-      const matchedIds = new Set([
-        ...((matchesA || []).map(m => m.user_b_id)),
-        ...((matchesB || []).map(m => m.user_a_id)),
-      ]);
-
-      const filteredIds = swipedIds.filter(id => !matchedIds.has(id));
+      const filteredIds = swipedIds;
 
       if (filteredIds.length === 0) {
         return res.json([]);
@@ -5006,7 +5043,11 @@ Badge assignment:
         .select('*')
         .in('id', filteredIds);
 
-      const likedProfiles = (profiles || []).map((row: any) => ({
+      const profileMap = Object.fromEntries((profiles || []).map((row: any) => [String(row.id), row]));
+      const likedProfiles = filteredIds
+        .map((id: string) => profileMap[String(id)])
+        .filter(Boolean)
+        .map((row: any) => ({
         id: row.id,
         email: row.email || "",
         name: row.name || "Nomad",

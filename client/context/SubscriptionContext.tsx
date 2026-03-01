@@ -52,22 +52,22 @@ const ENTITLEMENTS_STORAGE_KEY = "subscription_entitlements";
 
 const TIER_FEATURES: Record<SubscriptionTier, string[]> = {
   starter: [
-    "2 Radar scans per day",
+    "2 profile boosts per day",
     "2 Compatibility checks per day",
     "4 Activities per month",
   ],
   explorer: [
-    "15 Radar scans per day",
+    "15 profile boosts per day",
     "15 Compatibility checks per day",
     "15 Activities per month",
   ],
   adventurer: [
-    "Unlimited Radar scans",
+    "Unlimited profile boosts",
     "Unlimited Compatibility checks",
     "Unlimited Activities",
   ],
   lifetime: [
-    "Unlimited Radar scans",
+    "Unlimited profile boosts",
     "Unlimited Compatibility checks",
     "Unlimited Activities",
   ],

@@ -239,7 +239,8 @@ export default function ChatScreen() {
       await saveImageToGallery(uri);
       showAlert({ type: "success", title: "Saved", message: "Image saved to your gallery." });
     } catch (error) {
-      showAlert({ type: "error", title: "Download Failed", message: "Could not save the image." });
+      const detail = error instanceof Error ? error.message : "Could not save the image.";
+      showAlert({ type: "error", title: "Download Failed", message: detail });
     }
   }, []);
 
@@ -248,7 +249,8 @@ export default function ChatScreen() {
       await saveFileToDevice(uri, name);
       showAlert({ type: "success", title: "Saved", message: "File saved to your device." });
     } catch (error) {
-      showAlert({ type: "error", title: "Download Failed", message: "Could not save the file." });
+      const detail = error instanceof Error ? error.message : "Could not save the file.";
+      showAlert({ type: "error", title: "Download Failed", message: detail });
     }
   }, []);
 
@@ -722,33 +724,33 @@ export default function ChatScreen() {
       const onSwipe = () => setReplyTo(item);
 
       return (
-        <Swipeable
-          renderLeftActions={isOwnMessage ? undefined : () => <View style={styles.swipeAction} />}
-          renderRightActions={isOwnMessage ? () => <View style={styles.swipeAction} /> : undefined}
-          onSwipeableOpen={(direction, swipeable) => {
-            if (direction === 'left' && !isOwnMessage) onSwipe();
-            if (direction === 'right' && isOwnMessage) onSwipe();
-            swipeable.close();
-          }}
+        <Animated.View
+          entering={FadeInUp.delay(index * 50).springify()}
+          style={[
+            styles.messageContainer,
+            isOwnMessage ? styles.ownMessage : styles.otherMessage,
+          ]}
         >
-          <Animated.View
-            entering={FadeInUp.delay(index * 50).springify()}
-            style={[
-              styles.messageContainer,
-              isOwnMessage ? styles.ownMessage : styles.otherMessage,
-            ]}
+          {showTime ? (
+            <ThemedText
+              type="small"
+              style={[styles.timestamp, { color: theme.textSecondary }]}
+            >
+              {new Date(item.createdAt).toLocaleTimeString([], {
+                hour: "numeric",
+                minute: "2-digit",
+              })}
+            </ThemedText>
+          ) : null}
+          <Swipeable
+            renderLeftActions={isOwnMessage ? undefined : () => <View style={styles.swipeAction} />}
+            renderRightActions={isOwnMessage ? () => <View style={styles.swipeAction} /> : undefined}
+            onSwipeableOpen={(direction, swipeable) => {
+              if (direction === 'left' && !isOwnMessage) onSwipe();
+              if (direction === 'right' && isOwnMessage) onSwipe();
+              swipeable.close();
+            }}
           >
-            {showTime ? (
-              <ThemedText
-                type="small"
-                style={[styles.timestamp, { color: theme.textSecondary }]}
-              >
-                {new Date(item.createdAt).toLocaleTimeString([], {
-                  hour: "numeric",
-                  minute: "2-digit",
-                })}
-              </ThemedText>
-            ) : null}
             <Pressable onPress={() => handleMessagePress(item)} onLongPress={() => handleLongPress(item)} delayLongPress={300}>
               <View
                 style={[
@@ -793,8 +795,8 @@ export default function ChatScreen() {
               ) : null}
               </View>
             </Pressable>
-          </Animated.View>
-        </Swipeable>
+          </Swipeable>
+        </Animated.View>
       );
     },
     [user?.id, theme, chatMessages, handleLongPress, renderMessageContent, handleReaction, replyTo, playingAudioId]
@@ -841,7 +843,7 @@ export default function ChatScreen() {
         inverted={chatMessages.length > 0}
         contentContainerStyle={[
           styles.listContent,
-          { paddingTop: headerHeight + Spacing.lg + 10 },
+          { paddingBottom: headerHeight + Spacing.lg + 10, paddingTop: Spacing.md },
           chatMessages.length === 0 && styles.emptyListContent,
         ]}
         ListEmptyComponent={EmptyChat}
@@ -1287,6 +1289,7 @@ const styles = StyleSheet.create({
   },
   messageContainer: {
     marginBottom: Spacing.sm,
+    width: "100%",
   },
   ownMessage: {
     alignItems: "flex-end",
@@ -1300,6 +1303,7 @@ const styles = StyleSheet.create({
   },
   messageBubble: {
     maxWidth: "80%",
+    minWidth: 72,
     paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.md,
     borderRadius: BorderRadius.lg,
@@ -1313,6 +1317,7 @@ const styles = StyleSheet.create({
   messageText: {
     fontSize: 16,
     lineHeight: 22,
+    flexShrink: 1,
   },
   messageFooter: {
     flexDirection: "row",

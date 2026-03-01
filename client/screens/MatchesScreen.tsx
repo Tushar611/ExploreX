@@ -120,20 +120,38 @@ export default function MatchesScreen() {
   const navigation = useNavigation<NavigationProp>();
   const swipeableRefs = useRef<Map<string, Swipeable>>(new Map());
 
+  const dedupeMatches = useCallback((items: Match[]) => {
+    const byId = new Map<string, Match>();
+    for (const item of items) {
+      const existing = byId.get(item.id);
+      if (!existing) {
+        byId.set(item.id, item);
+        continue;
+      }
+
+      const existingTime = new Date(existing.lastMessage?.createdAt || existing.createdAt || 0).getTime();
+      const itemTime = new Date(item.lastMessage?.createdAt || item.createdAt || 0).getTime();
+      if (itemTime >= existingTime) {
+        byId.set(item.id, item);
+      }
+    }
+    return Array.from(byId.values());
+  }, []);
+
   const pendingMatches = useMemo(() => 
-    matches.filter(m => !m.lastMessage),
-    [matches]
+    dedupeMatches(matches).filter(m => !m.lastMessage),
+    [matches, dedupeMatches]
   );
 
   const activeChats = useMemo(() => 
-    matches
+    dedupeMatches(matches)
       .filter(m => m.lastMessage)
       .sort((a, b) => {
         if (a.isFavourite && !b.isFavourite) return -1;
         if (!a.isFavourite && b.isFavourite) return 1;
         return new Date(b.lastMessage!.createdAt).getTime() - new Date(a.lastMessage!.createdAt).getTime();
       }),
-    [matches]
+    [matches, dedupeMatches]
   );
 
   const handleMatchPress = (match: Match) => {

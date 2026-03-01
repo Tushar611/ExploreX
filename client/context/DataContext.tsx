@@ -489,6 +489,24 @@ export function DataProvider({ children }: { children: ReactNode }) {
       return latest ? { ...match, lastMessage: latest } : match;
     });
   };
+
+  const dedupeMatchesById = (inputMatches: Match[]): Match[] => {
+    const byId = new Map<string, Match>();
+    for (const match of inputMatches) {
+      const existing = byId.get(match.id);
+      if (!existing) {
+        byId.set(match.id, match);
+        continue;
+      }
+
+      const existingTime = new Date(existing.lastMessage?.createdAt || existing.createdAt || 0).getTime();
+      const nextTime = new Date(match.lastMessage?.createdAt || match.createdAt || 0).getTime();
+      if (nextTime >= existingTime) {
+        byId.set(match.id, match);
+      }
+    }
+    return Array.from(byId.values());
+  };
   const authHeaders = () => {
     const headers: Record<string, string> = {};
     if (session?.sessionToken) {
@@ -556,7 +574,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       if (requestId !== loadRequestRef.current) return;
 
       // Show cached data immediately to avoid cold-start spinner on mobile.
-      const hydratedLocalMatches = hydrateMatchesWithLastMessage(localMatches, loadedMessages);
+      const hydratedLocalMatches = dedupeMatchesById(hydrateMatchesWithLastMessage(localMatches, loadedMessages));
       setMessages(loadedMessages);
       setMatches(hydratedLocalMatches);
       setForumPosts(loadedForum);
@@ -572,7 +590,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       if (requestId !== loadRequestRef.current) return;
 
       const serverMatchIds = new Set(matchesRes.map((m) => m.id));
-      const mergedMatches = [
+      const mergedMatches = dedupeMatchesById([
         ...matchesRes.map((serverMatch) => {
           const local = hydratedLocalMatches.find((localMatch) => localMatch.id === serverMatch.id);
           return local
@@ -585,7 +603,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
             : serverMatch;
         }),
         ...localMatches.filter((localMatch) => !serverMatchIds.has(localMatch.id)),
-      ];
+      ]);
 
       const discoverCards = (discoverRes && discoverRes.length > 0)
         ? discoverRes
@@ -623,7 +641,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         syncedMessages[matchId] = msgs;
       }
 
-      const finalMatches = hydrateMatchesWithLastMessage(mergedMatches, syncedMessages);
+      const finalMatches = dedupeMatchesById(hydrateMatchesWithLastMessage(mergedMatches, syncedMessages));
       setMatches(finalMatches);
       setMessages(syncedMessages);
 
@@ -1104,14 +1122,40 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const deleteMatch = async (matchId: string): Promise<void> => {
     if (!user) return;
-    
+
+    const previousMatches = matches;
+    const previousMessages = messages;
+
     const updatedMatches = matches.filter(m => m.id !== matchId);
     setMatches(updatedMatches);
     await AsyncStorage.setItem(`${MATCHES_KEY}_${user.id}`, JSON.stringify(updatedMatches));
-    
+
     const { [matchId]: _, ...remainingMessages } = messages;
     setMessages(remainingMessages);
     await AsyncStorage.setItem(`${MESSAGES_KEY}_${user.id}`, JSON.stringify(remainingMessages));
+
+    try {
+      const baseUrl = getApiUrl();
+      const url = new URL(`/api/matches/${matchId}`, baseUrl);
+      url.searchParams.set("userId", user.id);
+
+      const response = await fetch(url.toString(), {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Delete match failed (${response.status})`);
+      }
+
+      await loadData();
+    } catch (error) {
+      console.error("Delete match error:", error);
+      setMatches(previousMatches);
+      setMessages(previousMessages);
+      await AsyncStorage.setItem(`${MATCHES_KEY}_${user.id}`, JSON.stringify(previousMatches));
+      await AsyncStorage.setItem(`${MESSAGES_KEY}_${user.id}`, JSON.stringify(previousMessages));
+    }
   };
 
   const refreshData = async () => {

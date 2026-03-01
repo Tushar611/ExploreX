@@ -753,8 +753,10 @@ async function registerRoutes(app2) {
       if (!req.file) {
         return res.status(400).json({ error: "File is required" });
       }
-      const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "https");
-      const host = String(req.headers["x-forwarded-host"] || req.headers.host || "");
+      const rawProto = String(req.headers["x-forwarded-proto"] || req.protocol || "https");
+      const rawHost = String(req.headers["x-forwarded-host"] || req.headers.host || "");
+      const proto = rawProto.split(",")[0].trim() || "https";
+      const host = rawHost.split(",")[0].trim();
       const isAbsolute = host.length > 0;
       const relativeUrl = `/uploads/${req.file.filename}`;
       const url = isAbsolute ? `${proto}://${host}${relativeUrl}` : relativeUrl;
@@ -3415,40 +3417,28 @@ Badge assignment:
           pgPool.query(`SELECT swiped_id FROM swipes WHERE swiper_id = $1`, [userId]),
           pgPool.query(`SELECT * FROM user_profiles WHERE id <> $1 ORDER BY id`, [userId])
         ]);
-        let matchRows = [];
-        try {
-          const matchRes = await pgPool.query(
-            `SELECT user_a_id, user_b_id FROM matches WHERE user_a_id = $1 OR user_b_id = $1`,
-            [userId]
-          );
-          matchRows = matchRes.rows || [];
-        } catch {
-          const matchResLegacy = await pgPool.query(
-            `SELECT user_a AS user_a_id, user_b AS user_b_id FROM matches WHERE user_a = $1 OR user_b = $1`,
-            [userId]
-          );
-          matchRows = matchResLegacy.rows || [];
-        }
+        const matchRes = await pgPool.query(
+          `
+            SELECT
+              COALESCE(user_a_id, user_a) AS user_a_id,
+              COALESCE(user_b_id, user_b) AS user_b_id
+            FROM matches
+            WHERE COALESCE(user_a_id, user_a) = $1
+               OR COALESCE(user_b_id, user_b) = $1
+          `,
+          [userId]
+        );
+        const matchRows = matchRes.rows || [];
         const swipedIds2 = swipedRes.rows.map((row) => String(row.swiped_id));
         const matchedIds2 = matchRows.map(
           (row) => String(row.user_a_id) === userId ? String(row.user_b_id) : String(row.user_a_id)
-        );
-        const baseExcludedIds2 = /* @__PURE__ */ new Set([userId, ...swipedIds2]);
+        ).filter((id) => id && id !== "null" && id !== "undefined");
         const strictExcludedIds2 = /* @__PURE__ */ new Set([userId, ...swipedIds2, ...matchedIds2]);
         let filtered2 = allProfilesRes.rows.filter((row) => {
           const id = String(row.id);
           return !strictExcludedIds2.has(id) && !id.startsWith("mock");
         });
         let realProfiles2 = filtered2;
-        if (realProfiles2.length < 5) {
-          const relaxed = allProfilesRes.rows.filter((row) => {
-            const id = String(row.id);
-            return !baseExcludedIds2.has(id) && !id.startsWith("mock");
-          });
-          const byId = new Map(realProfiles2.map((row) => [String(row.id), row]));
-          for (const row of relaxed) byId.set(String(row.id), row);
-          realProfiles2 = Array.from(byId.values());
-        }
         if (realProfiles2.length < 15) {
           const appUsersRes = await pgPool.query(
             `SELECT id, email, name, created_at FROM app_users WHERE id <> $1 ORDER BY created_at DESC LIMIT 100`,
@@ -3542,18 +3532,11 @@ Badge assignment:
         ...(matchesA || []).map((m) => m.user_b_id),
         ...(matchesB || []).map((m) => m.user_a_id)
       ];
-      const baseExcludedIds = /* @__PURE__ */ new Set([userId, ...swipedIds]);
       const strictExcludedIds = /* @__PURE__ */ new Set([userId, ...swipedIds, ...matchedIds]);
       const { data: allProfiles, error } = await sb.from("user_profiles").select("*").neq("id", userId).order("id");
       if (error) throw error;
       let filtered = (allProfiles || []).filter((p) => !strictExcludedIds.has(p.id) && !String(p.id).startsWith("mock"));
       let realProfiles = filtered;
-      if (realProfiles.length < 5) {
-        const relaxed = (allProfiles || []).filter((p) => !baseExcludedIds.has(p.id) && !String(p.id).startsWith("mock"));
-        const byId = new Map((realProfiles || []).map((row) => [String(row.id), row]));
-        for (const row of relaxed) byId.set(String(row.id), row);
-        realProfiles = Array.from(byId.values());
-      }
       const shuffle = (arr) => {
         const copy = [...arr];
         for (let i = copy.length - 1; i > 0; i--) {
@@ -3893,6 +3876,55 @@ Badge assignment:
       res.json([]);
     }
   });
+  app2.delete("/api/matches/:matchId", requireUserSession((req) => String(req.query?.userId || "")), async (req, res) => {
+    try {
+      const { matchId } = req.params;
+      const userId = String(req.query.userId || "").trim();
+      if (!matchId || !userId) {
+        return res.status(400).json({ error: "matchId and userId are required" });
+      }
+      if (pgPool) {
+        const matchRes = await pgPool.query(
+          `SELECT user_a_id, user_b_id FROM matches WHERE id = $1 LIMIT 1`,
+          [matchId]
+        );
+        if (!matchRes.rowCount) {
+          return res.status(404).json({ error: "Match not found" });
+        }
+        const row = matchRes.rows[0];
+        const userA2 = String(row.user_a_id || "");
+        const userB2 = String(row.user_b_id || "");
+        if (userId !== userA2 && userId !== userB2) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+        const otherUserId2 = userId === userA2 ? userB2 : userA2;
+        await pgPool.query(`DELETE FROM chat_messages WHERE match_id = $1`, [matchId]);
+        await pgPool.query(`DELETE FROM matches WHERE id = $1`, [matchId]);
+        await pgPool.query(
+          `DELETE FROM swipes WHERE swiper_id = $1 AND swiped_id = $2`,
+          [userId, otherUserId2]
+        );
+        return res.json({ success: true });
+      }
+      const sb = getSupabase();
+      const { data: matchRow, error: matchErr } = await sb.from("matches").select("id, user_a_id, user_b_id").eq("id", matchId).limit(1).maybeSingle();
+      if (matchErr) throw matchErr;
+      if (!matchRow) return res.status(404).json({ error: "Match not found" });
+      const userA = String(matchRow.user_a_id || "");
+      const userB = String(matchRow.user_b_id || "");
+      if (userId !== userA && userId !== userB) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      const otherUserId = userId === userA ? userB : userA;
+      await sb.from("chat_messages").delete().eq("match_id", matchId);
+      await sb.from("matches").delete().eq("id", matchId);
+      await sb.from("swipes").delete().eq("swiper_id", userId).eq("swiped_id", otherUserId);
+      return res.json({ success: true });
+    } catch (error) {
+      console.error("Delete match error:", error);
+      return res.status(500).json({ error: "Failed to delete match" });
+    }
+  });
   app2.get("/api/swipes/liked/:userId", requireUserSession((req) => req.params.userId), async (req, res) => {
     try {
       const { userId } = req.params;
@@ -3903,12 +3935,11 @@ Badge assignment:
         );
         const swipedIds2 = swipesRes.rows.map((s) => String(s.swiped_id));
         if (swipedIds2.length === 0) return res.json([]);
-        const matchRes = await pgPool.query(`SELECT user_a_id, user_b_id FROM matches WHERE user_a_id = $1 OR user_b_id = $1`, [userId]);
-        const matchedIds2 = new Set(matchRes.rows.map((m) => String(m.user_a_id) === userId ? String(m.user_b_id) : String(m.user_a_id)));
-        const filteredIds2 = swipedIds2.filter((id) => !matchedIds2.has(id) && !String(id).startsWith("mock"));
+        const filteredIds2 = swipedIds2.filter((id) => !String(id).startsWith("mock"));
         if (filteredIds2.length === 0) return res.json([]);
         const profilesRes = await pgPool.query(`SELECT * FROM user_profiles WHERE id = ANY($1::text[])`, [filteredIds2]);
-        const likedProfiles2 = profilesRes.rows.map((row) => ({
+        const profileMap2 = Object.fromEntries((profilesRes.rows || []).map((row) => [String(row.id), row]));
+        const likedProfiles2 = filteredIds2.map((id) => profileMap2[id]).filter(Boolean).map((row) => ({
           id: row.id,
           email: row.email || "",
           name: row.name || "Nomad",
@@ -3929,18 +3960,13 @@ Badge assignment:
         return res.json([]);
       }
       const swipedIds = swipes.map((s) => s.swiped_id).filter((id) => !String(id).startsWith("mock"));
-      const { data: matchesA } = await sb.from("matches").select("user_b_id").eq("user_a_id", userId);
-      const { data: matchesB } = await sb.from("matches").select("user_a_id").eq("user_b_id", userId);
-      const matchedIds = /* @__PURE__ */ new Set([
-        ...(matchesA || []).map((m) => m.user_b_id),
-        ...(matchesB || []).map((m) => m.user_a_id)
-      ]);
-      const filteredIds = swipedIds.filter((id) => !matchedIds.has(id));
+      const filteredIds = swipedIds;
       if (filteredIds.length === 0) {
         return res.json([]);
       }
       const { data: profiles } = await sb.from("user_profiles").select("*").in("id", filteredIds);
-      const likedProfiles = (profiles || []).map((row) => ({
+      const profileMap = Object.fromEntries((profiles || []).map((row) => [String(row.id), row]));
+      const likedProfiles = filteredIds.map((id) => profileMap[String(id)]).filter(Boolean).map((row) => ({
         id: row.id,
         email: row.email || "",
         name: row.name || "Nomad",
