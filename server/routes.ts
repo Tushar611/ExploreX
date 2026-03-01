@@ -3763,13 +3763,20 @@ Badge assignment:
           realProfiles = [...realProfiles, ...syntheticRows];
         }
 
-        filtered = realProfiles.length >= 15 ? realProfiles : [...realProfiles, ...mockProfiles];
+        const shuffle = (arr: any[]) => {
+          const copy = [...arr];
+          for (let i = copy.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [copy[i], copy[j]] = [copy[j], copy[i]];
+          }
+          return copy;
+        };
 
-        for (let i = filtered.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [filtered[i], filtered[j]] = [filtered[j], filtered[i]];
-        }
-        filtered = filtered.slice(0, 30);
+        const shuffledReal = shuffle(realProfiles);
+        const shuffledMock = shuffle(mockProfiles);
+        filtered = realProfiles.length > 0
+          ? [...shuffledReal, ...shuffledMock].slice(0, 30)
+          : shuffledMock.slice(0, 30);
 
         const meta = await loadExploreXMetaForUsers(filtered.map((row: any) => String(row.id)));
         const profiles = filtered.map((row: any) => {
@@ -3844,23 +3851,20 @@ Badge assignment:
       const realProfiles = filtered.filter(p => !p.id.startsWith('mock'));
       const mockProfiles = filtered.filter(p => p.id.startsWith('mock'));
 
-      // Count total real profiles in DB (excluding current user and already swiped)
-      const realCount = realProfiles.length;
+      const shuffle = (arr: any[]) => {
+        const copy = [...arr];
+        for (let i = copy.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [copy[i], copy[j]] = [copy[j], copy[i]];
+        }
+        return copy;
+      };
 
-      // If 15+ real profiles available, only show real ones
-      if (realCount >= 15) {
-        filtered = realProfiles;
-      } else {
-        // Mix real + mock
-        filtered = [...realProfiles, ...mockProfiles];
-      }
-
-      // Shuffle array (Fisher-Yates)
-      for (let i = filtered.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [filtered[i], filtered[j]] = [filtered[j], filtered[i]];
-      }
-      filtered = filtered.slice(0, 30);
+      const shuffledReal = shuffle(realProfiles);
+      const shuffledMock = shuffle(mockProfiles);
+      filtered = realProfiles.length > 0
+        ? [...shuffledReal, ...shuffledMock].slice(0, 30)
+        : shuffledMock.slice(0, 30);
 
       const meta = await loadExploreXMetaForUsers((filtered || []).map((row: any) => String(row.id)));
       const profiles = filtered.map((row: any) => {

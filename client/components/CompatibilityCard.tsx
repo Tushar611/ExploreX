@@ -94,10 +94,6 @@ export function CompatibilityCard({
 
   const checkCompatibility = async () => {
     if (!user?.id) return;
-    if (tier === "starter") {
-      navigation.navigate("Subscription");
-      return;
-    }
     setLoading(true);
     setError(null);
 
@@ -130,7 +126,8 @@ export function CompatibilityCard({
       }
 
       if (!response.ok) {
-        throw new Error("Failed to check compatibility");
+        const body = await response.json().catch(() => ({} as any));
+        throw new Error(body?.error || "Failed to check compatibility");
       }
 
       const data = await response.json();

@@ -410,7 +410,7 @@ export default function ActivitiesScreen() {
           onPress={() => navigation.navigate("SocialRadar" as any)}
         >
           <LinearGradient
-            colors={[AppColors.primary, AppColors.accent]}
+            colors={["#16A34A", "#22C55E"]}
             style={styles.radarBtnGradient}
           >
             <Ionicons name="radio-outline" size={20} color="#FFF" />
@@ -1245,8 +1245,8 @@ const styles = StyleSheet.create({
     marginRight: 0,
   },
   filterChipActive: {
-    backgroundColor: AppColors.primary,
-    shadowColor: AppColors.primary,
+    backgroundColor: "#0F172A",
+    shadowColor: "#0F172A",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.18,
     shadowRadius: 6,
@@ -1311,7 +1311,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 100,
-    backgroundColor: "rgba(36,107,253,0.86)",
+    backgroundColor: "rgba(217,119,6,0.88)",
   },
   typeBadgeText: {
     color: "#FFFFFF",
@@ -1371,7 +1371,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   timeChipText: {
-    color: AppColors.primary,
+    color: "#D97706",
     marginLeft: 4,
     fontWeight: "600",
     fontSize: 12,
@@ -1384,8 +1384,8 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: AppColors.primary,
-    shadowColor: AppColors.primary,
+    backgroundColor: "#6D28D9",
+    shadowColor: "#6D28D9",
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.22,
     shadowRadius: 8,

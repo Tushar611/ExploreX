@@ -71,12 +71,12 @@ const SPOT_ICONS: Record<CampSpot["type"], string> = {
 };
 
 const SPOT_COLORS: Record<CampSpot["type"], string> = {
-  hiking: "#4CAF50",
-  surfing: "#2196F3",
-  camping: "#FF9800",
-  fishing: "#00BCD4",
-  climbing: "#9C27B0",
-  kayaking: "#009688",
+  hiking: "#22C55E",
+  surfing: "#0EA5E9",
+  camping: "#F59E0B",
+  fishing: "#14B8A6",
+  climbing: "#A855F7",
+  kayaking: "#06B6D4",
 };
 const buildOsmMapHtml = (
   center: { latitude: number; longitude: number },
@@ -104,13 +104,13 @@ const buildOsmMapHtml = (
       map.setView([lat, lng], zoom || map.getZoom());
     }
     window.setCenter = setCenter;
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
     const markers = ${safeMarkers};
     markers.forEach(m => {
-      const color = m.type === 'activity' ? '#FF8C42' : (m.type === 'user' ? '#4CAF50' : '#2196F3');
+      const color = m.type === 'activity' ? '#F59E0B' : (m.type === 'user' ? '#22C55E' : '#0EA5E9');
       const marker = L.circleMarker([m.latitude, m.longitude], { radius: 8, color, fillColor: color, fillOpacity: 0.9 }).addTo(map);
       marker.bindPopup(m.title);
       marker.on('click', () => {

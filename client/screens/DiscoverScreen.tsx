@@ -372,15 +372,8 @@ export default function DiscoverScreen() {
     <>
       <View style={[styles.headerInfo, { top: topBarTop }]}>
         <View style={styles.brandRowCenter}>
-          <Image
-            source={require("../../assets/images/icon.png")}
-            style={styles.brandLogoIcon}
-            contentFit="cover"
-          />
-          <View style={styles.brandTextWrap}>
-            <ThemedText style={[styles.brandTextTop, { color: isDark ? "#EAF1FF" : "#1A3A7A" }]}>EXPLORE</ThemedText>
-            <ThemedText style={[styles.brandTextBottom, { color: isDark ? "#89D6FF" : "#246BFD" }]}>X</ThemedText>
-          </View>
+          <View style={[styles.brandDot, { backgroundColor: isDark ? "#89D6FF" : "#246BFD" }]} />
+          <ThemedText style={[styles.brandSingle, { color: isDark ? "#EAF1FF" : "#0F1B38" }]}>ExploreX</ThemedText>
         </View>
       </View>
 
@@ -413,7 +406,7 @@ export default function DiscoverScreen() {
       <View style={[styles.actions, { bottom: tabBarHeight + 10 }]}>
         <TinderButton
           icon="x"
-          color={AppColors.sunsetRose}
+          color={AppColors.success}
           size={60}
           iconSize={28}
           onPress={() => {
@@ -683,6 +676,16 @@ const styles = StyleSheet.create({
   },
   brandTextWrap: {
     flexDirection: "column",
+  },
+  brandDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  brandSingle: {
+    fontSize: 22,
+    fontWeight: "900" as const,
+    letterSpacing: 0.5,
   },
   brandTextTop: {
     fontSize: 13,

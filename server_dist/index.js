@@ -2925,12 +2925,17 @@ Badge assignment:
           }));
           realProfiles2 = [...realProfiles2, ...syntheticRows];
         }
-        filtered2 = realProfiles2.length >= 15 ? realProfiles2 : [...realProfiles2, ...mockProfiles2];
-        for (let i = filtered2.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [filtered2[i], filtered2[j]] = [filtered2[j], filtered2[i]];
-        }
-        filtered2 = filtered2.slice(0, 30);
+        const shuffle2 = (arr) => {
+          const copy = [...arr];
+          for (let i = copy.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [copy[i], copy[j]] = [copy[j], copy[i]];
+          }
+          return copy;
+        };
+        const shuffledReal2 = shuffle2(realProfiles2);
+        const shuffledMock2 = shuffle2(mockProfiles2);
+        filtered2 = realProfiles2.length > 0 ? [...shuffledReal2, ...shuffledMock2].slice(0, 30) : shuffledMock2.slice(0, 30);
         const meta2 = await loadExploreXMetaForUsers(filtered2.map((row) => String(row.id)));
         const profiles2 = filtered2.map((row) => {
           const enriched = addExploreXProfileFields(row, meta2);
@@ -2975,17 +2980,17 @@ Badge assignment:
       let filtered = (allProfiles || []).filter((p) => !excludeIds.has(p.id));
       const realProfiles = filtered.filter((p) => !p.id.startsWith("mock"));
       const mockProfiles = filtered.filter((p) => p.id.startsWith("mock"));
-      const realCount = realProfiles.length;
-      if (realCount >= 15) {
-        filtered = realProfiles;
-      } else {
-        filtered = [...realProfiles, ...mockProfiles];
-      }
-      for (let i = filtered.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [filtered[i], filtered[j]] = [filtered[j], filtered[i]];
-      }
-      filtered = filtered.slice(0, 30);
+      const shuffle = (arr) => {
+        const copy = [...arr];
+        for (let i = copy.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [copy[i], copy[j]] = [copy[j], copy[i]];
+        }
+        return copy;
+      };
+      const shuffledReal = shuffle(realProfiles);
+      const shuffledMock = shuffle(mockProfiles);
+      filtered = realProfiles.length > 0 ? [...shuffledReal, ...shuffledMock].slice(0, 30) : shuffledMock.slice(0, 30);
       const meta = await loadExploreXMetaForUsers((filtered || []).map((row) => String(row.id)));
       const profiles = filtered.map((row) => {
         const enriched = addExploreXProfileFields(row, meta);
