@@ -632,7 +632,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     setProfiles((prev) => prev.filter((p) => p.user.id !== userId));
     setLikedIds(prev => new Set(prev).add(userId));
 
-    const isMockProfile = userId.startsWith('mock_');
+    const isMockProfile = userId.startsWith('mock');
     if (isMockProfile && swipedProfile) {
       const matchId = `match_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const instantMatch: Match = {

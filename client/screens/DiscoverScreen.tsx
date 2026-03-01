@@ -378,8 +378,8 @@ export default function DiscoverScreen() {
             contentFit="cover"
           />
           <View style={styles.brandTextWrap}>
-            <ThemedText style={styles.brandTextTop}>NOMAD</ThemedText>
-            <ThemedText style={styles.brandTextBottom}>CONNECT</ThemedText>
+            <ThemedText style={[styles.brandTextTop, { color: isDark ? "#EAF1FF" : "#1A3A7A" }]}>EXPLORE</ThemedText>
+            <ThemedText style={[styles.brandTextBottom, { color: isDark ? "#89D6FF" : "#246BFD" }]}>X</ThemedText>
           </View>
         </View>
       </View>
@@ -413,7 +413,7 @@ export default function DiscoverScreen() {
       <View style={[styles.actions, { bottom: tabBarHeight + 10 }]}>
         <TinderButton
           icon="x"
-          color={AppColors.primary}
+          color={AppColors.sunsetRose}
           size={60}
           iconSize={28}
           onPress={() => {
@@ -423,7 +423,7 @@ export default function DiscoverScreen() {
         />
         <TinderButton
           icon="star"
-          color={AppColors.primary}
+          color={AppColors.sunsetGold}
           size={46}
           iconSize={20}
           onPress={() => {
@@ -434,7 +434,7 @@ export default function DiscoverScreen() {
         />
         <TinderButton
           icon="heart"
-          color={AppColors.primary}
+          color={AppColors.sunsetCoral}
           size={60}
           iconSize={28}
           onPress={() => {
@@ -687,14 +687,14 @@ const styles = StyleSheet.create({
   brandTextTop: {
     fontSize: 13,
     fontWeight: "800" as const,
-    color: "#E8744F",
+    color: "#246BFD",
     letterSpacing: 1.5,
     lineHeight: 15,
   },
   brandTextBottom: {
     fontSize: 16,
     fontWeight: "900" as const,
-    color: "#F4A261",
+    color: "#246BFD",
     letterSpacing: 1,
     lineHeight: 18,
   },

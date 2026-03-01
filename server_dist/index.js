@@ -2903,8 +2903,28 @@ Badge assignment:
         const matchedIds2 = matchRes.rows.map((row) => String(row.user_a_id) === userId ? String(row.user_b_id) : String(row.user_a_id));
         const excludeIds2 = /* @__PURE__ */ new Set([userId, ...swipedIds2, ...matchedIds2]);
         let filtered2 = allProfilesRes.rows.filter((row) => !excludeIds2.has(String(row.id)));
-        const realProfiles2 = filtered2.filter((p) => !String(p.id).startsWith("mock_"));
-        const mockProfiles2 = filtered2.filter((p) => String(p.id).startsWith("mock_"));
+        let realProfiles2 = filtered2.filter((p) => !String(p.id).startsWith("mock"));
+        const mockProfiles2 = filtered2.filter((p) => String(p.id).startsWith("mock"));
+        if (realProfiles2.length < 15) {
+          const appUsersRes = await pgPool.query(
+            `SELECT id, email, name, created_at FROM app_users WHERE id <> $1 ORDER BY created_at DESC LIMIT 100`,
+            [userId]
+          );
+          const existingIds = new Set(realProfiles2.map((p) => String(p.id)));
+          const syntheticRows = appUsersRes.rows.filter((u) => !excludeIds2.has(String(u.id)) && !existingIds.has(String(u.id))).map((u) => ({
+            id: u.id,
+            email: u.email,
+            name: u.name || (String(u.email || "").split("@")[0] || "Explorer"),
+            age: 25,
+            bio: "",
+            location: "",
+            photos: [],
+            interests: [],
+            created_at: u.created_at || (/* @__PURE__ */ new Date()).toISOString(),
+            updated_at: (/* @__PURE__ */ new Date()).toISOString()
+          }));
+          realProfiles2 = [...realProfiles2, ...syntheticRows];
+        }
         filtered2 = realProfiles2.length >= 15 ? realProfiles2 : [...realProfiles2, ...mockProfiles2];
         for (let i = filtered2.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1));
@@ -2933,7 +2953,7 @@ Badge assignment:
               trustScore: Number(enriched.trust_score || 0),
               meetupCount: Number(enriched.meetup_count || 0),
               createdAt: enriched.created_at || (/* @__PURE__ */ new Date()).toISOString(),
-              isMock: String(enriched.id).startsWith("mock_")
+              isMock: String(enriched.id).startsWith("mock")
             },
             distance: Math.floor(Math.random() * 50) + 1
           };
@@ -2953,8 +2973,8 @@ Badge assignment:
       const { data: allProfiles, error } = await sb.from("user_profiles").select("*").neq("id", userId).order("id");
       if (error) throw error;
       let filtered = (allProfiles || []).filter((p) => !excludeIds.has(p.id));
-      const realProfiles = filtered.filter((p) => !p.id.startsWith("mock_"));
-      const mockProfiles = filtered.filter((p) => p.id.startsWith("mock_"));
+      const realProfiles = filtered.filter((p) => !p.id.startsWith("mock"));
+      const mockProfiles = filtered.filter((p) => p.id.startsWith("mock"));
       const realCount = realProfiles.length;
       if (realCount >= 15) {
         filtered = realProfiles;
@@ -2988,7 +3008,7 @@ Badge assignment:
             trustScore: Number(enriched.trust_score || 0),
             meetupCount: Number(enriched.meetup_count || 0),
             createdAt: enriched.created_at || (/* @__PURE__ */ new Date()).toISOString(),
-            isMock: String(enriched.id).startsWith("mock_")
+            isMock: String(enriched.id).startsWith("mock")
           },
           distance: Math.floor(Math.random() * 50) + 1
         };
@@ -3020,7 +3040,7 @@ Badge assignment:
             `SELECT id FROM swipes WHERE swiper_id = $1 AND swiped_id = $2 AND direction = 'right' LIMIT 1`,
             [swipedId, swiperId]
           );
-          const shouldInstantMatch = String(swipedId).startsWith("mock_") || Number(reverseSwipe.rowCount || 0) > 0;
+          const shouldInstantMatch = String(swipedId).startsWith("mock") || Number(reverseSwipe.rowCount || 0) > 0;
           if (shouldInstantMatch) {
             const sorted = [String(swiperId), String(swipedId)].sort();
             const userA = sorted[0];
@@ -3071,7 +3091,7 @@ Badge assignment:
         direction,
         created_at: now
       }, { onConflict: "swiper_id,swiped_id" });
-      const isMockProfile = swipedId.startsWith("mock_");
+      const isMockProfile = swipedId.startsWith("mock");
       let match = null;
       if (direction === "right" && isMockProfile) {
         const matchId = `match_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;

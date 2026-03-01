@@ -3734,8 +3734,35 @@ Badge assignment:
         const excludeIds = new Set([userId, ...swipedIds, ...matchedIds]);
 
         let filtered = allProfilesRes.rows.filter((row: any) => !excludeIds.has(String(row.id)));
-        const realProfiles = filtered.filter((p: any) => !String(p.id).startsWith('mock_'));
-        const mockProfiles = filtered.filter((p: any) => String(p.id).startsWith('mock_'));
+        let realProfiles = filtered.filter((p: any) => !String(p.id).startsWith('mock'));
+        const mockProfiles = filtered.filter((p: any) => String(p.id).startsWith('mock'));
+
+        // If user_profiles has very few real rows, also include app_users that don't have profiles yet.
+        if (realProfiles.length < 15) {
+          const appUsersRes = await pgPool.query(
+            `SELECT id, email, name, created_at FROM app_users WHERE id <> $1 ORDER BY created_at DESC LIMIT 100`,
+            [userId]
+          );
+
+          const existingIds = new Set(realProfiles.map((p: any) => String(p.id)));
+          const syntheticRows = appUsersRes.rows
+            .filter((u: any) => !excludeIds.has(String(u.id)) && !existingIds.has(String(u.id)))
+            .map((u: any) => ({
+              id: u.id,
+              email: u.email,
+              name: u.name || (String(u.email || '').split('@')[0] || 'Explorer'),
+              age: 25,
+              bio: '',
+              location: '',
+              photos: [],
+              interests: [],
+              created_at: u.created_at || new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            }));
+
+          realProfiles = [...realProfiles, ...syntheticRows];
+        }
+
         filtered = realProfiles.length >= 15 ? realProfiles : [...realProfiles, ...mockProfiles];
 
         for (let i = filtered.length - 1; i > 0; i--) {
@@ -3766,7 +3793,7 @@ Badge assignment:
               trustScore: Number(enriched.trust_score || 0),
               meetupCount: Number(enriched.meetup_count || 0),
               createdAt: enriched.created_at || new Date().toISOString(),
-              isMock: String(enriched.id).startsWith('mock_'),
+              isMock: String(enriched.id).startsWith('mock'),
             },
             distance: Math.floor(Math.random() * 50) + 1,
           };
@@ -3814,8 +3841,8 @@ Badge assignment:
       let filtered = (allProfiles || []).filter(p => !excludeIds.has(p.id));
 
       // Separate real and mock profiles
-      const realProfiles = filtered.filter(p => !p.id.startsWith('mock_'));
-      const mockProfiles = filtered.filter(p => p.id.startsWith('mock_'));
+      const realProfiles = filtered.filter(p => !p.id.startsWith('mock'));
+      const mockProfiles = filtered.filter(p => p.id.startsWith('mock'));
 
       // Count total real profiles in DB (excluding current user and already swiped)
       const realCount = realProfiles.length;
@@ -3857,7 +3884,7 @@ Badge assignment:
             trustScore: Number(enriched.trust_score || 0),
             meetupCount: Number(enriched.meetup_count || 0),
             createdAt: enriched.created_at || new Date().toISOString(),
-            isMock: String(enriched.id).startsWith('mock_'),
+            isMock: String(enriched.id).startsWith('mock'),
           },
           distance: Math.floor(Math.random() * 50) + 1,
         };
@@ -3895,7 +3922,7 @@ Badge assignment:
             [swipedId, swiperId]
           );
 
-          const shouldInstantMatch = String(swipedId).startsWith('mock_') || Number(reverseSwipe.rowCount || 0) > 0;
+          const shouldInstantMatch = String(swipedId).startsWith('mock') || Number(reverseSwipe.rowCount || 0) > 0;
           if (shouldInstantMatch) {
             const sorted = [String(swiperId), String(swipedId)].sort();
             const userA = sorted[0];
@@ -3954,7 +3981,7 @@ Badge assignment:
           created_at: now,
         }, { onConflict: 'swiper_id,swiped_id' });
 
-      const isMockProfile = swipedId.startsWith('mock_');
+      const isMockProfile = swipedId.startsWith('mock');
 
       let match = null;
       if (direction === "right" && isMockProfile) {
